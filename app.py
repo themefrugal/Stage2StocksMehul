@@ -29,17 +29,15 @@ RESULT_CACHE_DIR = "daily_cache"
 os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 
 # ──────────────────────────────────────────────
-# HOLIDAY & WEEKEND CHECKER
+# HOLIDAY & WEEKEND CHECKER (Info only, non-blocking)
 # ──────────────────────────────────────────────
 def load_nse_holidays() -> set:
-    """Parses nse_holidays.json and returns a set of YYYY-MM-DD."""
     path = os.path.join(os.path.dirname(__file__), "nse_holidays.json")
     if not os.path.exists(path): return set()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     
     holidays = set()
-    # Flatten all segments (CM, CBM, FO, etc.) into one set
     for segment in data.values():
         for entry in segment:
             date_str = entry.get("tradingDate ", entry.get("tradingDate", "")).strip()
@@ -50,8 +48,7 @@ def load_nse_holidays() -> set:
                 continue
     return holidays
 
-def is_market_closed(date_str: str, holidays: set) -> bool:
-    """Checks if a given YYYY-MM-DD is a weekend or NSE holiday."""
+def is_weekend_or_holiday(date_str: str, holidays: set) -> bool:
     try:
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         return dt.weekday() >= 5 or date_str in holidays
@@ -83,7 +80,6 @@ def save_json_cache(df: pd.DataFrame, key: str):
     df.to_json(path, orient="records")
 
 def load_latest_fallback(target_key: str) -> tuple[pd.DataFrame | None, str | None]:
-    """Finds the most recent cached file <= target_key."""
     try:
         files = sorted([f.replace(".json", "") for f in os.listdir(RESULT_CACHE_DIR) if f.endswith(".json")], reverse=True)
         for f in files:
@@ -97,32 +93,21 @@ def load_latest_fallback(target_key: str) -> tuple[pd.DataFrame | None, str | No
 def _is_yfinance_fresh(raw_df: pd.DataFrame, target_date_str: str) -> bool:
     """Validates if yfinance returned complete EOD data for the target date."""
     try:
-        # Extract first valid ticker (handles both single & multi-ticker downloads)
         if isinstance(raw_df.columns, pd.MultiIndex):
             first_ticker = raw_df.columns.levels[0][0]
             sub = raw_df[first_ticker].dropna(how='all')
         else:
             sub = raw_df.dropna(how='all')
             
-        if sub.empty:
-            return False
-
-        # 1. Date match check
+        if sub.empty: return False
         latest_date = sub.index[-1].date().strftime("%Y-%m-%d")
-        if latest_date != target_date_str:
-            return False
-
-        # 2. Volume sanity (prevents caching incomplete syncs)
+        if latest_date != target_date_str: return False
         vol = sub["Volume"].iloc[-1]
-        if pd.isna(vol) or vol <= 0:
-            return False
-
-        return True
+        return not (pd.isna(vol) or vol <= 0)
     except Exception:
         return False
 
 def fetch_and_score_universe() -> tuple[pd.DataFrame, int]:
-    """Downloads ALL indices, validates freshness, scores, and returns full DF."""
     const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
     if not os.path.exists(const_path):
         st.error("❌ `constituents.json` missing.")
@@ -144,7 +129,6 @@ def fetch_and_score_universe() -> tuple[pd.DataFrame, int]:
 
     # ✅ FRESHNESS CHECK
     if not _is_yfinance_fresh(raw, target_date):
-        st.warning(f"⚠️ Yahoo Finance data not yet updated for **{target_date}**. Showing latest available cache.")
         return pd.DataFrame(), 0
 
     # Proceed with scoring
@@ -231,35 +215,37 @@ def main():
     st.markdown('<p class="hero">📊 Nifty Total Market Stage 2 Screener</p>', unsafe_allow_html=True)
     st.markdown(f'<p class="sub-hero">EOD Analysis · 7-Point Weinstein Score · {now_ist}</p>', unsafe_allow_html=True)
 
-    # ── 1. LOAD FULL UNIVERSE CACHE (Runs exactly once per day) ──
+    # ── 1. SMART CACHE/FETCH LOGIC (Non-blocking) ──
     target_key = get_target_date_key()
     holidays = load_nse_holidays()
     
     if "full_df" not in st.session_state:
-        market_closed = is_market_closed(target_key, holidays)
         df = load_json_cache(target_key)
         cache_date = target_key
-        
+
         if df is None:
-            if market_closed:
+            # Cache missing -> ALWAYS attempt fetch
+            df, _ = fetch_and_score_universe()
+            
+            if df is not None and not df.empty:
+                save_json_cache(df, target_key)
+                cache_date = target_key
+            else:
+                # Yahoo data stale/unavailable -> Fallback to latest cache
                 df, cache_date = load_latest_fallback(target_key)
                 if df is None or df.empty:
-                    st.warning(f"📅 Market closed. No cached data available for {target_key}.")
+                    st.warning(f"📅 No cached or fresh EOD data available yet. Try again after 7:30 PM IST.")
                     return
-                st.info(f"📅 Market closed. Showing data from **{cache_date}**.")
-            else:
-                df, _ = fetch_and_score_universe()
-                if not df.empty:
-                    save_json_cache(df, target_key)
-                    cache_date = target_key
-                else:
-                    st.warning("⚠️ Data fetch failed or no valid symbols. Try again later.")
-                    return
-                    
+                st.info(f"⚠️ EOD data not yet updated for {target_key}. Showing latest available cache from **{cache_date}**.")
+                
         st.session_state["full_df"] = df
         st.session_state["cache_date"] = cache_date
 
     full_df = st.session_state["full_df"]
+    
+    # Show soft warning if target date is weekend/holiday but cache exists
+    if is_weekend_or_holiday(target_key, holidays) and cache_date != target_key:
+        st.info(f"📅 NSE is closed on {target_key}. Displaying cached data from **{cache_date}**.")
 
     # ── 2. CONTROL PANEL (Checkboxes + Filters) ──
     with st.sidebar.form("controls", clear_on_submit=False):
@@ -273,9 +259,8 @@ def main():
         const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
         idx_options = list(json.load(open(const_path, "r")).keys()) if os.path.exists(const_path) else []
         
-        # Checkbox layout (2 columns)
-        selected_indices = []
         cols = st.columns(2)
+        selected_indices = []
         for i, idx in enumerate(idx_options):
             default_checked = idx in ["Nifty 50", "Nifty Next 50"]
             if cols[i % 2].checkbox(idx, value=default_checked):
@@ -290,33 +275,26 @@ def main():
         st.info("👈 Select indices/filters and click **Apply Filters & Show** to begin.")
         return
 
-    # ── 3. APPLY FILTERS (Instant, Zero API Calls) ──
+    # ── 3. APPLY FILTERS (Instant) ──
     display_df = full_df.copy()
-    
-    if selected_indices:
-        display_df = display_df[display_df["Index"].isin(selected_indices)]
-    if rsi_toggle:
-        display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
-    if not show_illiquid:
-        display_df = display_df[~display_df["Illiquid"]]
+    if selected_indices: display_df = display_df[display_df["Index"].isin(selected_indices)]
+    if rsi_toggle: display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
+    if not show_illiquid: display_df = display_df[~display_df["Illiquid"]]
 
     if display_df.empty:
         st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
-    # Format Symbol with ILLIQ tag
     display_df["Symbol"] = display_df.apply(
         lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
     )
 
-    # Summary
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cache Date", st.session_state["cache_date"])
     c2.metric("Total Universe", len(full_df))
     c3.metric("Matches (Filters)", len(display_df))
     c4.metric("Strong Stage 2", len(display_df[display_df["Score"] >= 6]))
 
-    # Row Coloring
     def color_rows(row):
         bg_map = {
             "🟢 Strong Stage 2": "#ecfdf5",
