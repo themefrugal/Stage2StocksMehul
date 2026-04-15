@@ -40,7 +40,6 @@ def load_nse_holidays() -> set:
     holidays = set()
     for segment in data.values():
         for entry in segment:
-            # Handle trailing spaces in JSON keys gracefully
             date_str = entry.get("tradingDate ", entry.get("tradingDate", "")).strip()
             try:
                 dt = datetime.strptime(date_str, "%d-%b-%Y")
@@ -260,7 +259,7 @@ def main():
     elif cache_date != (datetime.now(IST) - timedelta(days=1 if datetime.now(IST).hour < 19 else 0)).strftime("%Y-%m-%d"):
         st.info(f"ℹ️ Market closed or data pending. Showing latest available cache from **{cache_date}**.")
 
-    # ── APPLY FILTERS (Instant) ──
+    # ── APPLY FILTERS & REORDER COLUMNS ──
     display_df = df.copy()
     if selected_indices: display_df = display_df[display_df["Index"].isin(selected_indices)]
     if rsi_toggle: display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
@@ -270,9 +269,14 @@ def main():
         st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
+    # Format Symbol with ILLIQ tag
     display_df["Symbol"] = display_df.apply(
         lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
     )
+
+    # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Vol Ratio, RSI
+    cols_ordered = ["Symbol", "Index", "Stage", "Score", "Close", "Volume", "Vol_Ratio", "RSI"]
+    display_df = display_df[cols_ordered]
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cache Date", cache_date)
@@ -280,6 +284,7 @@ def main():
     c3.metric("Matches (Filters)", len(display_df))
     c4.metric("Strong Stage 2", len(display_df[display_df["Score"] >= 6]))
 
+    # Row Coloring Logic
     def color_rows(row):
         bg_map = {
             "🟢 Strong Stage 2": "#ecfdf5",
@@ -300,14 +305,12 @@ def main():
             "Close": st.column_config.NumberColumn("Close (₹)", format="%.2f", width="small"),
             "Volume": st.column_config.NumberColumn("Volume", format="%,d", width="medium"),
             "Vol_Ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2f x", width="small"),
-            "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small"),
-            # Hide internal calculation columns
-            "Illiquid": None, "MA50": None, "MA150": None, "MA200": None, "MA_Stack": None
+            "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small")
         }, height=650
     )
 
-    # Export CSV without internal helper columns
-    csv = display_df.drop(columns=["Illiquid", "MA50", "MA150", "MA200", "MA_Stack"]).to_csv(index=False).encode("utf-8")
+    # Export CSV (drops helper columns if any remain)
+    csv = display_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download Screener Results", csv, 
         file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
