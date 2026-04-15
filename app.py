@@ -210,7 +210,7 @@ st.markdown("""
 .sb-head { font-weight: 700; margin-bottom: 0.5rem; font-size: 0.95rem; }
 .hero { text-align: center; font-size: 1.8rem; font-weight: 800; margin-bottom: 0.2rem; }
 .sub-hero { text-align: center; color: #64748b; margin-top: -8px; }
-.illiq-tag { color: #dc2626; font-size: 0.7em; font-weight: 800; margin-left: 4px; vertical-align: middle; }
+.illiq-tag { color: #dc2626; font-size: 0.75em; font-weight: 700; margin-left: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -231,14 +231,15 @@ def main():
         const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
         idx_options = list(json.load(open(const_path, "r")).keys()) if os.path.exists(const_path) else []
         
-        cols = st.columns(2)
+        # Checkbox layout
         selected_indices = []
+        cols = st.columns(2)
         for i, idx in enumerate(idx_options):
             default_checked = idx in ["Nifty 50", "Nifty Next 50"]
             if cols[i % 2].checkbox(idx, value=default_checked):
                 selected_indices.append(idx)
         
-        run_btn = st.form_submit_button("🚀 Apply Filters & Show", type="primary", use_container_width=True)
+        run_btn = st.form_submit_button("🚀 Apply Filters & Show", type="primary", width="stretch")
 
     if "run_triggered" not in st.session_state and run_btn:
         st.session_state["run_triggered"] = True
@@ -259,7 +260,7 @@ def main():
     elif cache_date != (datetime.now(IST) - timedelta(days=1 if datetime.now(IST).hour < 19 else 0)).strftime("%Y-%m-%d"):
         st.info(f"ℹ️ Market closed or data pending. Showing latest available cache from **{cache_date}**.")
 
-    # ── APPLY FILTERS & REORDER COLUMNS ──
+    # ── APPLY FILTERS & PREPARE DISPLAY ──
     display_df = df.copy()
     if selected_indices: display_df = display_df[display_df["Index"].isin(selected_indices)]
     if rsi_toggle: display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
@@ -269,14 +270,17 @@ def main():
         st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
-    # Format Symbol with ILLIQ tag
+    # Inline ILLIQ tag next to ticker
     display_df["Symbol"] = display_df.apply(
         lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
     )
 
     # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Vol Ratio, RSI
-    cols_ordered = ["Symbol", "Index", "Stage", "Score", "Close", "Volume", "Vol_Ratio", "RSI"]
-    display_df = display_df[cols_ordered]
+    display_cols = ["Symbol", "Index", "Stage", "Score", "Close", "Volume", "Vol_Ratio", "RSI"]
+    display_df = display_df[display_cols]
+
+    # Drop all helper columns before styling to prevent rendering conflicts
+    display_df = display_df.drop(columns=[c for c in display_df.columns if c not in display_cols], errors="ignore")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cache Date", cache_date)
@@ -296,8 +300,12 @@ def main():
 
     styled_df = display_df.style.apply(color_rows, axis=1)
 
+    # Render Table - Fixed deprecation & blank row issue
     st.dataframe(
-        styled_df, use_container_width=True, hide_index=True, column_config={
+        styled_df,
+        width="stretch",  # Replaced use_container_width=True
+        hide_index=True, 
+        column_config={
             "Symbol": st.column_config.TextColumn("Ticker", width="medium"),
             "Index": st.column_config.TextColumn("Source", width="small"),
             "Stage": st.column_config.TextColumn("Classification", width="medium"),
@@ -306,15 +314,17 @@ def main():
             "Volume": st.column_config.NumberColumn("Volume", format="%,d", width="medium"),
             "Vol_Ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2f x", width="small"),
             "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small")
-        }, height=650
+        }, 
+        height=650
     )
 
-    # Export CSV (drops helper columns if any remain)
+    # Export CSV
     csv = display_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download Screener Results", csv, 
         file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
-        mime="text/csv", use_container_width=True
+        mime="text/csv",
+        width="stretch"  # Replaced use_container_width=True
     )
 
 if __name__ == "__main__":
