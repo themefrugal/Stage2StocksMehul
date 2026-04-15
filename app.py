@@ -235,7 +235,7 @@ def main():
         selected_indices = []
         cols = st.columns(2)
         for i, idx in enumerate(idx_options):
-            default_checked = idx in ["Nifty 50", "Nifty Next 50"]
+            default_checked = idx in ["Nifty Smallcap 250", "Nifty Microcap 250"]
             if cols[i % 2].checkbox(idx, value=default_checked):
                 selected_indices.append(idx)
         
@@ -272,7 +272,7 @@ def main():
 
     # Inline ILLIQ tag next to ticker
     display_df["Symbol"] = display_df.apply(
-       lambda r: f"{r['Symbol']} ⚠️" if r['Illiquid'] else r['Symbol'], axis=1
+        lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
     )
 
     # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Vol Ratio, RSI
@@ -296,7 +296,7 @@ def main():
             "🟠 Early/Weak Stage 2": "#fef2f2",
             "⚪ Not Stage 2": "#f9fafb"
         }
-        return [f'background-color: {bg_map.get(row["Stage"], "#000000")}'] * len(row)
+        return [f'background-color: {bg_map.get(row["Stage"], "#ffffff")}'] * len(row)
 
     styled_df = display_df.style.apply(color_rows, axis=1)
 
