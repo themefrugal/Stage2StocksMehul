@@ -55,7 +55,7 @@ st.markdown(
     .card-teal { background: linear-gradient(135deg,#11998e,#38ef7d); }
     .card-rose { background: linear-gradient(135deg,#f093fb,#f5576c); }
     .card-slate { background: linear-gradient(135deg,#475569,#1e293b); }
-    .criteria { background: #f8fafc; border-left: 4px solid #667eea; padding: 1rem 1.25rem; border-radius: 0 0.6rem 0.6rem 0; font-size: 0.92rem; line-height: 1.7; }
+    .criteria { background: #f8fafc; border-left: 4px solid #667eea; padding: 1rem 1.25rem; border-radius: 0 0.6rem 0.6rem 0; font-size: 0.92rem; line-height: 1.7; color:#1e293b; }
     .hero-title { font-size: 2rem; font-weight: 800; background: linear-gradient(90deg,#667eea,#f5576c); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-align: center; }
     .hero-sub { text-align: center; color: #64748b; font-size: 0.95rem; margin-top: -4px; }
     .sb-head { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
