@@ -24,7 +24,7 @@ IST = ZoneInfo("Asia/Kolkata")
 HISTORY_PERIOD = "2y"
 MIN_VOLUME = 100_000
 HH_HL_LOOKBACK = 50          # Change here if needed
-MA_RISING_LOOKBACK = 10      # Change here if needed
+MA_RISING_LOOKBACK = 20      # Change here if needed
 RESULT_CACHE_DIR = "daily_cache"
 os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 
@@ -272,7 +272,7 @@ def main():
 
     # Inline ILLIQ tag next to ticker
     display_df["Symbol"] = display_df.apply(
-        lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
+       lambda r: f"{r['Symbol']} ⚠️" if r['Illiquid'] else r['Symbol'], axis=1
     )
 
     # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Vol Ratio, RSI
