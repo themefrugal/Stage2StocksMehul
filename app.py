@@ -23,8 +23,9 @@ warnings.filterwarnings("ignore")
 IST = ZoneInfo("Asia/Kolkata")
 HISTORY_PERIOD = "2y"
 MIN_VOLUME = 100_000
+VOL_AVG_PERIOD = 10          # Average volume period: 10/20/50 days
 HH_HL_LOOKBACK = 50          # Change here if needed
-MA_RISING_LOOKBACK = 20      # Change here if needed
+MA_RISING_LOOKBACK = 50      # Change here if needed
 RESULT_CACHE_DIR = "daily_cache"
 os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 
@@ -92,13 +93,13 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
     ma50 = c.rolling(50).mean()
     ma150 = c.rolling(150).mean()
     ma200 = c.rolling(200).mean()
-    avg_vol_10 = v.rolling(10).mean()
+    avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
     rsi = _rsi_wilder(c)
 
     c1, h1, l1, v1 = c.iloc[-1], h.iloc[-1], l.iloc[-1], v.iloc[-1]
     m50, m150, m200 = ma50.iloc[-1], ma150.iloc[-1], ma200.iloc[-1]
     r = rsi.iloc[-1]
-    vr = v1 / avg_vol_10.iloc[-1] if avg_vol_10.iloc[-1] > 0 else 0
+    vr = v1 / avg_vol.iloc[-1] if avg_vol.iloc[-1] > 0 else 0
     if np.isnan([m50, m150, m200, vr, r]).any(): return None
 
     score = 0
@@ -117,7 +118,7 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
 
     return {
         "Score": score, "Stage": stage,
-        "Illiquid": v1 < MIN_VOLUME,
+        "Illiquid": avg_vol.iloc[-1] < MIN_VOLUME,
         "Close": round(c1, 2), "Volume": int(v1), "Vol_Ratio": round(vr, 2),
         "RSI": round(r, 1), "MA50": round(m50, 2), "MA150": round(m150, 2), 
         "MA200": round(m200, 2), "MA_Stack": m50 > m150 > m200
