@@ -2,7 +2,7 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║   Stage 2 Breakout Screener — Nifty Total Market (750)     ║
-║   7-Point Weinstein Scoring | Persistent Daily Cache       ║
+║   7-Point Weinstein Scoring | Full-Universe Daily Cache    ║
 ║   DATA: constituents.json | HOLIDAYS: nse_holidays.json    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -32,29 +32,31 @@ os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 # HOLIDAY & WEEKEND CHECKER
 # ──────────────────────────────────────────────
 def load_nse_holidays() -> set:
-    """Parses nse_holidays.json (CM segment) and returns set of YYYY-MM-DD."""
+    """Parses nse_holidays.json and returns a set of YYYY-MM-DD."""
     path = os.path.join(os.path.dirname(__file__), "nse_holidays.json")
     if not os.path.exists(path): return set()
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     
     holidays = set()
-    # CM = Capital Market (Equity). Handle trailing spaces in keys.
-    for entry in data.get("CM", []):
-        date_str = entry.get("tradingDate ", entry.get("tradingDate", "")).strip()
-        try:
-            dt = datetime.strptime(date_str, "%d-%b-%Y")
-            holidays.add(dt.strftime("%Y-%m-%d"))
-        except ValueError:
-            continue
+    # Flatten all segments (CM, CBM, FO, etc.) into one set
+    for segment in data.values():
+        for entry in segment:
+            date_str = entry.get("tradingDate ", entry.get("tradingDate", "")).strip()
+            try:
+                dt = datetime.strptime(date_str, "%d-%b-%Y")
+                holidays.add(dt.strftime("%Y-%m-%d"))
+            except ValueError:
+                continue
     return holidays
 
-def is_market_open(date_str: str, holidays: set) -> bool:
-    """Checks if a given YYYY-MM-DD is a weekday and not a holiday."""
-    dt = datetime.strptime(date_str, "%Y-%m-%d")
-    if dt.weekday() >= 5:  # Saturday=5, Sunday=6
+def is_market_closed(date_str: str, holidays: set) -> bool:
+    """Checks if a given YYYY-MM-DD is a weekend or NSE holiday."""
+    try:
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        return dt.weekday() >= 5 or date_str in holidays
+    except ValueError:
         return False
-    return date_str not in holidays
 
 # ──────────────────────────────────────────────
 # PERSISTENT CACHE UTILS
@@ -66,7 +68,7 @@ def get_target_date_key() -> str:
         return now.strftime("%Y-%m-%d")
     return (now - timedelta(days=1)).strftime("%Y-%m-%d")
 
-def load_cache(key: str) -> pd.DataFrame | None:
+def load_json_cache(key: str) -> pd.DataFrame | None:
     path = os.path.join(RESULT_CACHE_DIR, f"{key}.json")
     try:
         if os.path.exists(path):
@@ -76,21 +78,91 @@ def load_cache(key: str) -> pd.DataFrame | None:
         return None
     return None
 
-def save_cache(df: pd.DataFrame, key: str):
+def save_json_cache(df: pd.DataFrame, key: str):
     path = os.path.join(RESULT_CACHE_DIR, f"{key}.json")
     df.to_json(path, orient="records")
 
 def load_latest_fallback(target_key: str) -> tuple[pd.DataFrame | None, str | None]:
     """Finds the most recent cached file <= target_key."""
     try:
-        files = [f.replace(".json", "") for f in os.listdir(RESULT_CACHE_DIR) if f.endswith(".json")]
-        files.sort(reverse=True)
+        files = sorted([f.replace(".json", "") for f in os.listdir(RESULT_CACHE_DIR) if f.endswith(".json")], reverse=True)
         for f in files:
             if f <= target_key:
-                return load_cache(f), f
+                df = load_json_cache(f)
+                if df is not None: return df, f
     except Exception:
         pass
     return None, None
+
+def _is_yfinance_fresh(raw_df: pd.DataFrame, target_date_str: str) -> bool:
+    """Validates if yfinance returned complete EOD data for the target date."""
+    try:
+        # Extract first valid ticker (handles both single & multi-ticker downloads)
+        if isinstance(raw_df.columns, pd.MultiIndex):
+            first_ticker = raw_df.columns.levels[0][0]
+            sub = raw_df[first_ticker].dropna(how='all')
+        else:
+            sub = raw_df.dropna(how='all')
+            
+        if sub.empty:
+            return False
+
+        # 1. Date match check
+        latest_date = sub.index[-1].date().strftime("%Y-%m-%d")
+        if latest_date != target_date_str:
+            return False
+
+        # 2. Volume sanity (prevents caching incomplete syncs)
+        vol = sub["Volume"].iloc[-1]
+        if pd.isna(vol) or vol <= 0:
+            return False
+
+        return True
+    except Exception:
+        return False
+
+def fetch_and_score_universe() -> tuple[pd.DataFrame, int]:
+    """Downloads ALL indices, validates freshness, scores, and returns full DF."""
+    const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
+    if not os.path.exists(const_path):
+        st.error("❌ `constituents.json` missing.")
+        return pd.DataFrame(), 0
+    with open(const_path, "r") as f:
+        constituents = json.load(f)
+
+    symbols = list(dict.fromkeys([s for syms in constituents.values() for s in syms]))
+    tickers = [f"{s}.NS" for s in symbols]
+    target_date = get_target_date_key()
+
+    try:
+        with st.spinner("🌐 Fetching EOD data for full Nifty 750 universe..."):
+            raw = yf.download(tickers, period=HISTORY_PERIOD, group_by="ticker", 
+                              threads=True, progress=False, auto_adjust=True)
+    except Exception as e:
+        st.error(f"Yahoo Finance Error: {e}")
+        return pd.DataFrame(), 0
+
+    # ✅ FRESHNESS CHECK
+    if not _is_yfinance_fresh(raw, target_date):
+        st.warning(f"⚠️ Yahoo Finance data not yet updated for **{target_date}**. Showing latest available cache.")
+        return pd.DataFrame(), 0
+
+    # Proceed with scoring
+    results = []
+    for t in tickers:
+        sym = t.replace(".NS", "")
+        try:
+            sub = raw[t].dropna(how="all") if len(tickers) > 1 else raw.dropna(how="all")
+            sub.columns = [c[0] if isinstance(c, tuple) else c for c in sub.columns]
+            res = score_stage2(sub)
+            if res:
+                res["Symbol"] = sym
+                res["Index"] = next((idx for idx, syms in constituents.items() if sym in syms), "Unknown")
+                results.append(res)
+        except: continue
+
+    df = pd.DataFrame(results)
+    return df.sort_values("Score", ascending=False), len(df)
 
 # ──────────────────────────────────────────────
 # PURE PYTHON SCORING ENGINE
@@ -141,46 +213,6 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
         "MA200": round(m200, 2), "MA_Stack": m50 > m150 > m200
     }
 
-def run_heavy_calc(selected_indices: list[str], rsi_filter: bool) -> tuple[pd.DataFrame, int]:
-    """Fetches EOD data, scores all stocks, returns DF + valid count."""
-    path = os.path.join(os.path.dirname(__file__), "constituents.json")
-    if not os.path.exists(path):
-        st.error("❌ `constituents.json` missing.")
-        return pd.DataFrame(), 0
-    with open(path, "r") as f:
-        constituents = json.load(f)
-
-    symbols = []
-    for idx in selected_indices:
-        symbols.extend(constituents.get(idx, []))
-    symbols = list(dict.fromkeys(symbols))
-    tickers = [f"{s}.NS" for s in symbols]
-
-    try:
-        raw = yf.download(tickers, period=HISTORY_PERIOD, group_by="ticker", 
-                          threads=True, progress=False, auto_adjust=True)
-    except Exception as e:
-        st.error(f"Yahoo Finance Error: {e}")
-        return pd.DataFrame(), 0
-
-    results = []
-    for t in tickers:
-        sym = t.replace(".NS", "")
-        try:
-            sub = raw[t].dropna(how="all") if len(tickers) > 1 else raw.dropna(how="all")
-            sub.columns = [c[0] if isinstance(c, tuple) else c for c in sub.columns]
-            res = score_stage2(sub)
-            if res:
-                res["Symbol"] = sym
-                res["Index"] = next((idx for idx in selected_indices if sym in constituents.get(idx, [])), "Unknown")
-                results.append(res)
-        except: continue
-
-    df = pd.DataFrame(results)
-    if df.empty: return pd.DataFrame(), 0
-    if rsi_filter: df = df[(df["RSI"] >= 50) & (df["RSI"] <= 70)]
-    return df.sort_values("Score", ascending=False), len(df)
-
 # ──────────────────────────────────────────────
 # STREAMLIT UI
 # ──────────────────────────────────────────────
@@ -199,13 +231,38 @@ def main():
     st.markdown('<p class="hero">📊 Nifty Total Market Stage 2 Screener</p>', unsafe_allow_html=True)
     st.markdown(f'<p class="sub-hero">EOD Analysis · 7-Point Weinstein Score · {now_ist}</p>', unsafe_allow_html=True)
 
-    # ── Determine Target Date & Market Status ──
+    # ── 1. LOAD FULL UNIVERSE CACHE (Runs exactly once per day) ──
     target_key = get_target_date_key()
     holidays = load_nse_holidays()
-    market_open = is_market_open(target_key, holidays)
+    
+    if "full_df" not in st.session_state:
+        market_closed = is_market_closed(target_key, holidays)
+        df = load_json_cache(target_key)
+        cache_date = target_key
+        
+        if df is None:
+            if market_closed:
+                df, cache_date = load_latest_fallback(target_key)
+                if df is None or df.empty:
+                    st.warning(f"📅 Market closed. No cached data available for {target_key}.")
+                    return
+                st.info(f"📅 Market closed. Showing data from **{cache_date}**.")
+            else:
+                df, _ = fetch_and_score_universe()
+                if not df.empty:
+                    save_json_cache(df, target_key)
+                    cache_date = target_key
+                else:
+                    st.warning("⚠️ Data fetch failed or no valid symbols. Try again later.")
+                    return
+                    
+        st.session_state["full_df"] = df
+        st.session_state["cache_date"] = cache_date
 
-    # ── CONTROL PANEL (Batched) ──
-    with st.sidebar.form("screener_controls", clear_on_submit=False):
+    full_df = st.session_state["full_df"]
+
+    # ── 2. CONTROL PANEL (Checkboxes + Filters) ──
+    with st.sidebar.form("controls", clear_on_submit=False):
         st.markdown('<p class="sb-head">🔍 Filters</p>', unsafe_allow_html=True)
         rsi_toggle = st.toggle("Filter: RSI between 50–70", value=False)
         show_illiquid = st.toggle("Show Illiquid Stocks (Vol < 1L)", value=False)
@@ -213,77 +270,63 @@ def main():
         st.markdown("---")
         st.markdown('<p class="sb-head">📦 Select Indices</p>', unsafe_allow_html=True)
         
-        path = os.path.join(os.path.dirname(__file__), "constituents.json")
-        idx_options = list(json.load(open(path, "r")).keys()) if os.path.exists(path) else []
-        selected_indices = st.multiselect("", idx_options, default=["Nifty 50", "Nifty Next 50"])
+        const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
+        idx_options = list(json.load(open(const_path, "r")).keys()) if os.path.exists(const_path) else []
         
-        run_btn = st.form_submit_button("🚀 Run Screener", type="primary", use_container_width=True)
+        # Checkbox layout (2 columns)
+        selected_indices = []
+        cols = st.columns(2)
+        for i, idx in enumerate(idx_options):
+            default_checked = idx in ["Nifty 50", "Nifty Next 50"]
+            if cols[i % 2].checkbox(idx, value=default_checked):
+                selected_indices.append(idx)
+        
+        run_btn = st.form_submit_button("🚀 Apply Filters & Show", type="primary", use_container_width=True)
 
-    # Store only on button press
-    if run_btn:
-        st.session_state["s_indices"] = selected_indices
-        st.session_state["s_rsi"] = rsi_toggle
-        st.session_state["s_illiquid"] = show_illiquid
+    if "run_triggered" not in st.session_state and run_btn:
+        st.session_state["run_triggered"] = True
 
-    if "s_indices" not in st.session_state:
-        st.info("👈 Select indices and click **Run Screener** to begin.")
+    if not st.session_state.get("run_triggered"):
+        st.info("👈 Select indices/filters and click **Apply Filters & Show** to begin.")
         return
 
-    indices = st.session_state["s_indices"]
-    if not indices:
-        st.warning("Please select at least one index.")
-        return
+    # ── 3. APPLY FILTERS (Instant, Zero API Calls) ──
+    display_df = full_df.copy()
+    
+    if selected_indices:
+        display_df = display_df[display_df["Index"].isin(selected_indices)]
+    if rsi_toggle:
+        display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
+    if not show_illiquid:
+        display_df = display_df[~display_df["Illiquid"]]
 
-    # ── DATA RESOLUTION LOGIC ──
-    df = load_cache(target_key)
-    display_date = target_key
-    valid_count = len(df) if df is not None else 0
-
-    if df is None:
-        if not market_open:
-            # Holiday/Weekend: load last available cache
-            df, display_date = load_latest_fallback(target_key)
-            valid_count = len(df) if df is not None else 0
-            if df is None or df.empty:
-                st.info(f"📅 Market closed on {target_key}. No cached data available.")
-                return
-            st.warning(f"📅 Market closed on {target_key}. Showing data from **{display_date}**.")
-        else:
-            # Trading day, no cache → heavy calculation
-            with st.spinner(f"⏳ Fetching & scoring EOD data for {target_key}..."):
-                df, valid_count = run_heavy_calc(indices, st.session_state["s_rsi"])
-                if not df.empty:
-                    save_cache(df, target_key)
-                else:
-                    st.info("No stocks matched the criteria or data fetch failed.")
-                    return
-
-    # ── FILTER & DISPLAY ──
-    df_display = df[~df["Illiquid"]] if not st.session_state["s_illiquid"] else df.copy()
-    if df_display.empty:
-        st.info("All matching stocks are marked Illiquid. Toggle 'Show Illiquid Stocks' to view them.")
+    if display_df.empty:
+        st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
     # Format Symbol with ILLIQ tag
-    df_display["Symbol"] = df_display.apply(
+    display_df["Symbol"] = display_df.apply(
         lambda r: f"{r['Symbol']} <span class='illiq-tag'>ILLIQ</span>" if r['Illiquid'] else r['Symbol'], axis=1
     )
 
+    # Summary
     c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Selected Indices", len(indices))
-    c2.metric("Valid Data", valid_count)
-    c3.metric("Stage 2 Matches", len(df))
-    c4.metric("Displayed", len(df_display))
+    c1.metric("Cache Date", st.session_state["cache_date"])
+    c2.metric("Total Universe", len(full_df))
+    c3.metric("Matches (Filters)", len(display_df))
+    c4.metric("Strong Stage 2", len(display_df[display_df["Score"] >= 6]))
 
     # Row Coloring
     def color_rows(row):
         bg_map = {
-            "🟢 Strong Stage 2": "#ecfdf5", "🟡 Likely Stage 2": "#fefce8",
-            "🟠 Early/Weak Stage 2": "#fef2f2", "⚪ Not Stage 2": "#f9fafb"
+            "🟢 Strong Stage 2": "#ecfdf5",
+            "🟡 Likely Stage 2": "#fefce8",
+            "🟠 Early/Weak Stage 2": "#fef2f2",
+            "⚪ Not Stage 2": "#f9fafb"
         }
         return [f'background-color: {bg_map.get(row["Stage"], "#ffffff")}'] * len(row)
 
-    styled_df = df_display.style.apply(color_rows, axis=1)
+    styled_df = display_df.style.apply(color_rows, axis=1)
 
     st.dataframe(
         styled_df, use_container_width=True, hide_index=True, column_config={
@@ -299,7 +342,7 @@ def main():
         }, height=650
     )
 
-    csv = df_display.drop(columns=["Color"]).to_csv(index=False).encode("utf-8")
+    csv = display_df.drop(columns=["Color"]).to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download Screener Results", csv, 
         file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
