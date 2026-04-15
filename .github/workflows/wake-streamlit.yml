@@ -12,5 +12,5 @@ jobs:
       - name: Wake up Streamlit app
         run: |
           echo "🌐 Pinging Streamlit app at 6:55 PM IST..."
-          curl -sSf --retry 3 --retry-delay 5 https://your-app-name.streamlit.app/ || true
+          curl -sSf --retry 3 --retry-delay 5 https://stage-2-stocks---app-td6eclbraouxtyfvbt9eiz.streamlit.app/ || true
           echo "✅ Ping complete."
