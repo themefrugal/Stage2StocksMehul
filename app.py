@@ -40,6 +40,7 @@ def load_nse_holidays() -> set:
     holidays = set()
     for segment in data.values():
         for entry in segment:
+            # Handle trailing spaces in JSON keys gracefully
             date_str = entry.get("tradingDate ", entry.get("tradingDate", "")).strip()
             try:
                 dt = datetime.strptime(date_str, "%d-%b-%Y")
@@ -167,7 +168,7 @@ def fetch_and_score_universe(selected_indices: list[str], rsi_filter: bool) -> t
     return df.sort_values("Score", ascending=False), len(df)
 
 def resolve_screener_data(selected_indices: list[str], rsi_filter: bool):
-    """Implements your exact logic: Time-based target → Find valid trading day → Cache/Fetch."""
+    """Implements exact logic: Time-based target → Find valid trading day → Cache/Fetch."""
     now = datetime.now(IST)
     
     # 1. Determine starting date based on 7 PM cutoff
@@ -300,11 +301,13 @@ def main():
             "Volume": st.column_config.NumberColumn("Volume", format="%,d", width="medium"),
             "Vol_Ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2f x", width="small"),
             "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small"),
-            "Illiquid": None, "Color": None, "MA50": None, "MA150": None, "MA200": None, "MA_Stack": None
+            # Hide internal calculation columns
+            "Illiquid": None, "MA50": None, "MA150": None, "MA200": None, "MA_Stack": None
         }, height=650
     )
 
-    csv = display_df.drop(columns=["Color"]).to_csv(index=False).encode("utf-8")
+    # Export CSV without internal helper columns
+    csv = display_df.drop(columns=["Illiquid", "MA50", "MA150", "MA200", "MA_Stack"]).to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download Screener Results", csv, 
         file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
