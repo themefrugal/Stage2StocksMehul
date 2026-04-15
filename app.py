@@ -1,122 +1,47 @@
 #!/usr/bin/env python3
 """
 ╔══════════════════════════════════════════════════════════════╗
-║   Stage 2 Breakout Screener — Nifty Microcap 250           ║
-║   FIXED: Bulk yfinance, NSE fallback, safe auto-refresh    ║
-║   UPDATED: IST Header Time + 7 PM Scheduled Refresh        ║
+║   Stage 2 Breakout Screener — Nifty Total Market (750)     ║
+║   7-Point Weinstein Scoring | Pure Python Core | EOD Only  ║
+║   DATA SEPARATED: constituents.json                        ║
 ╚══════════════════════════════════════════════════════════════╝
 """
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
 import yfinance as yf
-import time
+import json
+import os
 from datetime import datetime
 from zoneinfo import ZoneInfo
 import warnings
-from streamlit_autorefresh import st_autorefresh
 warnings.filterwarnings("ignore")
 
 # ──────────────────────────────────────────────
 # CONFIGURATION
 # ──────────────────────────────────────────────
-INDEX_NAME = "NIFTY MICROCAP 250"
-HISTORY_PERIOD = "3mo"
-DMA_FAST = 20
-DMA_SLOW = 50
-VOL_AVG_PERIOD = 10
-VOL_RATIO_THRESHOLD = 1.5
-RSI_PERIOD = 14
-RSI_LO, RSI_HI = 50, 70
-MIN_VOLUME = 100_000
-
 IST = ZoneInfo("Asia/Kolkata")
+HISTORY_PERIOD = "2y"
+MIN_VOLUME = 100_000
+HH_HL_LOOKBACK = 50          # Change here if needed
+MA_RISING_LOOKBACK = 20      # Change here if needed
 
 # ──────────────────────────────────────────────
-# PAGE CONFIG
+# DATA LOADER (PHP-Friendly JSON)
 # ──────────────────────────────────────────────
-st.set_page_config(
-    page_title="Stage 2 Breakout Screener | Microcap 250",
-    page_icon="🚀",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-st.markdown(
-"""
-<style>
-.card { padding: 1.25rem 1rem; border-radius: 0.85rem; color: #fff; text-align: center; box-shadow: 0 4px 14px rgba(0,0,0,.12); }
-.card .num { font-size: 2.1rem; font-weight: 800; line-height: 1.1; }
-.card .lbl { font-size: 0.82rem; opacity: 0.9; margin-top: 2px; }
-.card-purple { background: linear-gradient(135deg,#667eea,#764ba2); }
-.card-teal { background: linear-gradient(135deg,#11998e,#38ef7d); }
-.card-rose { background: linear-gradient(135deg,#f093fb,#f5576c); }
-.card-slate { background: linear-gradient(135deg,#475569,#1e293b); }
-.criteria { background: #f8fafc; border-left: 4px solid #667eea; padding: 1rem 1.25rem; border-radius: 0 0.6rem 0.6rem 0; font-size: 0.92rem; line-height: 1.7; color:#1e293b; }
-.hero-title { font-size: 2rem; font-weight: 800; background: linear-gradient(90deg,#667eea,#f5576c); -webkit-background-clip: text; -webkit-text-fill-color: transparent; text-align: center; }
-.hero-sub { text-align: center; color: #64748b; font-size: 0.95rem; margin-top: -4px; }
-.sb-head { font-weight: 700; font-size: 0.95rem; margin-bottom: 0.4rem; }
-</style>
-""", unsafe_allow_html=True
-)
-
-# ══════════════════════════════════════════════
-# DATA LAYER
-# ══════════════════════════════════════════════
-_FALLBACK_CONSTITUENTS = [
-    "ASKAUTOLTD", "AXISCADES", "AARTIDRUGS", "AARTIPHARM", "AVL", "ADVENZYMES", "AEQUS", "AETHER", "AHLUCONT",
-    "AKUMS", "APLLTD", "ALIVUS", "ALKYLAMINE", "ALOKINDS", "APOLLO", "ACI", "ARVINDFASN", "ARVIND", "ASHAPURMIN",
-    "ASHOKA", "ASTRAMICRO", "ATLANTAELE", "AURIONPRO", "AVALON", "AVANTIFEED", "CCAVENUE", "AWFIS", "AZAD",
-    "BAJAJELEC", "BALAMINES", "BALUFORGE", "BANCOINDIA", "BIRLACORPN", "BBOX", "BLACKBUCK", "BLUESTONE", "BORORENEW",
-    "CIEINDIA", "CMSINFO", "CORONA", "CSBBANK", "CAMPUS", "CRAMC", "CAPILLARY", "CELLO", "CENTURYPLY", "CERA", "CIGNITITEC",
-    "CRIZAC", "CUPID", "DCBBANK", "DATAMATICS", "DIACABS", "DBL", "AGARWALEYE", "DYNAMATECH", "EPL", "EDELWEISS", "EMIL",
-    "ELECTCAST", "ELLEN", "EMBDL", "ENTERO", "EIEL", "EQUITASBNK", "ETHOSLTD", "EUREKAFORB", "FEDFINA", "FIEMIND", "FINPIPE",
-    "UTLSOLAR", "GHCL", "GMMPFAUDLR", "GMRP&UI", "GRWRHITECH", "GODREJAGRO", "GOKEX", "GOKULAGRO", "GREAVESCOT", "GAEL",
-    "GNFC", "GPPL", "GSFC", "HGINFRA", "HAPPSTMNDS", "HCG", "HEMIPROP", "HERITGFOOD", "HCC", "IFBIND", "IIFLCAPS", "INOXINDIA",
-    "INDIAGLYCO", "INDIASHLTR", "IMFA", "INDIGOPNTS", "ICIL", "INOXGREEN", "IONEXCHANG", "JKLAKSHMI", "JKPAPER", "JAIBALAJI",
-    "JAMNAAUTO", "JSFB", "JAYNECOIND", "JSLL", "JLHL", "JUSTDIAL", "JYOTHYLAB", "KNRCON", "KPIGREEN", "KRBL", "KRN", "KSB",
-    "KANSAINER", "KTKBANK", "KSCL", "KIRLOSBROS", "KIRLPNU", "KITEX", "LXCHEM", "IXIGO", "LLOYDSENGG", "LLOYDSENT",
-    "LUMAXTECH", "MOIL", "MSTCLTD", "MTARTECH", "MAHSCOOTER", "MAHSEAMLES", "MANORAMA", "MARKSANS", "MASTEK", "MEDPLUS",
-    "METROPOLIS", "MIDHANI", "BECTORFOOD", "NEOGEN", "NESCO", "NFL", "NAZARA", "NETWORK18", "OPTIEMUS", "ORIENTCEM",
-    "ORKLAINDIA", "OSWALPUMPS", "PNGJL", "PCJEWELLER", "PNCINFRA", "PTC", "PARAS", "PARKHOSPS", "PGIL", "PICCADIL",
-    "POWERMECH", "PRAJIND", "PRICOLLTD", "PFOCUS", "PRSMJOHNSN", "PRIVISCL", "PRUDENT", "PURVA", "QPOWER", "QUESS",
-    "RAIN", "RALLIS", "RCF", "RATEGAIN", "RTNINDIA", "RTNPOWER", "RAYMONDLSL", "REDTAPE", "REFEX", "RELAXO", "RELIGARE",
-    "RBA", "ROUTE", "RUBICON", "SKFINDUS", "SKFINDIA", "SKYGOLD", "SMLMAH", "SAATVIKGL", "SAFARI", "SAMHI", "SANDUMA",
-    "SANSERA", "SENCO", "STYL", "SHAILY", "SHAKTIPUMP", "SHARDACROP", "SHAREINDIA", "SFL", "SHILPAMED", "RENUKA",
-    "SHRIPISTON", "SKIPPER", "SMARTWORKS", "SOUTHBANK", "LOTUSDEV", "STARCEMENT", "SWSOLAR", "STLTECH", "STAR",
-    "STYRENIX", "SUBROS", "SUDARSCHEM", "SUDEEPPHRM", "SPARC", "SUNTECK", "SUPRIYA", "SURYAROSNI", "TARC", "TDPOWERSYS",
-    "TSFINV", "TVSSCS", "TMB", "TANLA", "TEXRAIL", "THANGAMAYL", "ANUP", "THOMASCOOK", "THYROCARE", "TI", "TIMETECHNO",
-    "TIPSMUSIC", "TRANSRAILL", "TRIVENI", "UJJIVANSFB", "VGUARD", "VMART", "VIPIND", "V2RETAIL", "WABAG", "VAIBHAVGBL",
-    "DBREALTY", "VARROC", "MANYAVAR", "VIKRAMSOLR", "VIYASH", "VOLTAMP", "WAAREERTL", "WAKEFIT", "WEWORK", "WEBELSOLAR",
-    "WELENT", "WESTLIFE", "YATHARTH", "ZAGGLE"
-]
-
 @st.cache_data(ttl=86_400, show_spinner=False)
-def get_index_constituents() -> list[str]:
-    url = f"https://indices.nseindia.com/api/equity-stockIndices?index={INDEX_NAME.replace(' ', '%20')}"
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Referer": "https://www.nseindia.com/market-data/live-equity-market",
-        "Host": "indices.nseindia.com",
-    }
-    try:
-        sess = requests.Session()
-        sess.headers.update(headers)
-        sess.get("https://www.nseindia.com/", timeout=10)
-        time.sleep(0.5)
-        resp = sess.get(url, timeout=15)
-        if resp.status_code == 200:
-            data = resp.json()
-            symbols = [item["symbol"] for item in data.get("data", []) if item.get("symbol")]
-            if len(symbols) > 200:
-                return symbols
-    except Exception:
-        pass
-    st.warning(" NSE API blocked/failed. Using recent cached constituent snapshot.")
-    return list(set(_FALLBACK_CONSTITUENTS))
+def load_constituents() -> dict:
+    """Load index lists from external JSON. Fails gracefully if missing."""
+    path = os.path.join(os.path.dirname(__file__), "constituents.json")
+    if not os.path.exists(path):
+        st.error("❌ `constituents.json` not found. Please place it in the app directory.")
+        return {}
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
+# ──────────────────────────────────────────────
+# PURE PYTHON SCORING ENGINE
+# ──────────────────────────────────────────────
 def _rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     delta = series.diff()
     gain = delta.clip(lower=0)
@@ -126,185 +51,161 @@ def _rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     rs = avg_gain / avg_loss.replace(0, np.nan)
     return 100 - (100 / (1 + rs))
 
-def _analyse(symbol: str, df: pd.DataFrame) -> dict | None:
-    close = df["Close"]
-    vol = df["Volume"]
-    dma20 = close.rolling(DMA_FAST).mean()
-    dma50 = close.rolling(DMA_SLOW).mean()
-    avg_vol = vol.rolling(VOL_AVG_PERIOD).mean()
-    rsi = _rsi_wilder(close, RSI_PERIOD)
-    c = close.iloc[-1]
-    c_prev = close.iloc[-2]
-    v_today = vol.iloc[-1]
-    d20, d50 = dma20.iloc[-1], dma50.iloc[-1]
-    d20_prev, d50_prev = dma20.iloc[-2], dma50.iloc[-2]
-    av = avg_vol.iloc[-1]
+def score_stage2(df: pd.DataFrame) -> dict | None:
+    if len(df) < 250: return None
+
+    c, h, l, v = df["Close"], df["High"], df["Low"], df["Volume"]
+    ma50 = c.rolling(50).mean()
+    ma150 = c.rolling(150).mean()
+    ma200 = c.rolling(200).mean()
+    avg_vol_10 = v.rolling(10).mean()
+    rsi = _rsi_wilder(c)
+
+    c1, h1, l1, v1 = c.iloc[-1], h.iloc[-1], l.iloc[-1], v.iloc[-1]
+    m50, m150, m200 = ma50.iloc[-1], ma150.iloc[-1], ma200.iloc[-1]
     r = rsi.iloc[-1]
-    if pd.isna([d20, d50, av, r]).any():
-        return None
-    above_20 = c > d20
-    above_50 = c > d50
-    vol_ratio = v_today / av if av > 0 else 0
-    vol_surge = vol_ratio >= VOL_RATIO_THRESHOLD
-    rsi_ok = RSI_LO <= r <= RSI_HI
-    min_vol_ok = v_today >= MIN_VOLUME
-    if not (above_20 and above_50 and vol_surge and rsi_ok and min_vol_ok):
-        return None
-    fresh = (c_prev <= d20_prev and c > d20) or (c_prev <= d50_prev and c > d50)
+    vr = v1 / avg_vol_10.iloc[-1] if avg_vol_10.iloc[-1] > 0 else 0
+
+    if np.isnan([m50, m150, m200, vr, r]).any(): return None
+
+    score = 0
+    if vr >= 2.0: score += 1
+    if h1 >= h.rolling(HH_HL_LOOKBACK).max().shift(1).iloc[-1]: score += 1
+    if l1 >= l.rolling(HH_HL_LOOKBACK).min().shift(1).iloc[-1]: score += 1
+    if c1 > m50 and ma50.iloc[-1] > ma50.iloc[-MA_RISING_LOOKBACK]: score += 1
+    if c1 > m200 and ma200.iloc[-1] > ma200.iloc[-MA_RISING_LOOKBACK]: score += 1
+    if c1 > m150: score += 1
+    if m50 > m150 > m200: score += 1
+
+    if score >= 6: stage, color = "🟢 Strong Stage 2", "#10b981"
+    elif score >= 4: stage, color = "🟡 Likely Stage 2", "#f59e0b"
+    elif score >= 2: stage, color = "🟠 Early/Weak Stage 2", "#ef4444"
+    else: stage, color = "⚪ Not Stage 2", "#6b7280"
+
     return {
-        "Symbol": symbol,
-        "Close": round(c, 2),
-        "Day_Chg": round((c - c_prev) / c_prev * 100, 2),
-        "DMA_20": round(d20, 2),
-        "DMA_50": round(d50, 2),
-        "Above_20": round((c - d20) / d20 * 100, 2),
-        "Above_50": round((c - d50) / d50 * 100, 2),
-        "Volume": int(v_today),
-        "Avg_Vol_10D": int(av),
-        "Vol_Ratio": round(vol_ratio, 2),
-        "RSI": round(r, 1),
-        "Breakout": "🔴 Fresh" if fresh else "🟢 Sustained",
-        "Data_Date": str(df.index[-1].date()),
+        "Score": score, "Stage": stage, "Color": color,
+        "Illiquid": v1 < MIN_VOLUME,
+        "Close": round(c1, 2), "Vol_Ratio": round(vr, 2), "RSI": round(r, 1),
+        "MA50": round(m50, 2), "MA150": round(m150, 2), "MA200": round(m200, 2),
+        "MA_Stack": m50 > m150 > m200
     }
 
-@st.cache_data(ttl=1800, show_spinner="⏳ Bulk-fetching EOD data for 250 stocks (takes ~10s)...")
-def run_screener():
-    symbols = get_index_constituents()
-    if not symbols:
-        return pd.DataFrame(), 0, 0, 0, ""
-    total = len(symbols)
+@st.cache_data(ttl=86_400, show_spinner="⏳ Fetching EOD data...")
+def run_universe_screener(selected_indices: list[str], rsi_filter: bool = False):
+    constituents = load_constituents()
+    if not selected_indices or not constituents:
+        return pd.DataFrame(), 0
+    
+    symbols = []
+    for idx in selected_indices:
+        symbols.extend(constituents.get(idx, []))
+    symbols = list(dict.fromkeys(symbols))
     tickers = [f"{s}.NS" for s in symbols]
+    
     try:
-        raw_df = yf.download(
-            tickers, period=HISTORY_PERIOD, group_by='ticker',
-            auto_adjust=True, threads=True, progress=False
-        )
+        raw = yf.download(tickers, period=HISTORY_PERIOD, group_by="ticker", 
+                          threads=True, progress=False, auto_adjust=True)
     except Exception as e:
-        st.error(f"Yahoo Finance download failed: {e}")
-        return pd.DataFrame(), total, 0, total, ""
+        st.error(f"Yahoo Finance Error: {e}")
+        return pd.DataFrame(), 0
+
     results = []
-    latest_date = ""
+    valid = 0
     for t in tickers:
         sym = t.replace(".NS", "")
         try:
-            if len(tickers) == 1:
-                sub = raw_df.dropna(how='all')
-            else:
-                sub = raw_df[t].dropna(how='all')
-            if len(sub) >= max(DMA_SLOW, RSI_PERIOD) + 2:
-                sub.columns = [c[0] if isinstance(c, tuple) else c for c in sub.columns]
-                res = _analyse(sym, sub)
-                if res:
-                    results.append(res)
-                    latest_date = res["Data_Date"]
-        except Exception:
-            continue
-    errors = total - len(results)
-    df_out = pd.DataFrame(results)
-    if not df_out.empty:
-        df_out = df_out.sort_values("Vol_Ratio", ascending=False)
-    return df_out, total, len(results), errors, latest_date
+            sub = raw[t].dropna(how="all") if len(tickers) > 1 else raw.dropna(how="all")
+            sub.columns = [c[0] if isinstance(c, tuple) else c for c in sub.columns]
+            res = score_stage2(sub)
+            if res:
+                valid += 1
+                res["Symbol"] = sym
+                res["Index"] = idx if any(sym in constituents.get(idx, []) for idx in selected_indices) else "Unknown"
+                results.append(res)
+        except: continue
 
-# ══════════════════════════════════════════════
-# UI LAYER
-# ══════════════════════════════════════════════
-def _card(css_class: str, number, label: str) -> str:
-    return f'<div class="card {css_class}"><div class="num">{number}</div><div class="lbl">{label}</div></div>'
+    df = pd.DataFrame(results)
+    if df.empty: return pd.DataFrame(), valid
+    if rsi_filter: df = df[(df["RSI"] >= 50) & (df["RSI"] <= 70)]
+    return df.sort_values("Score", ascending=False), valid
+
+# ──────────────────────────────────────────────
+# STREAMLIT UI
+# ──────────────────────────────────────────────
+st.set_page_config(page_title="Stage 2 Screener | Nifty 750", page_icon="📈", layout="wide")
+st.markdown("""
+<style>
+.sb-head { font-weight: 700; margin-bottom: 0.5rem; font-size: 0.95rem; }
+.hero { text-align: center; font-size: 1.8rem; font-weight: 800; margin-bottom: 0.2rem; }
+.sub-hero { text-align: center; color: #64748b; margin-top: -8px; }
+.tag { padding: 4px 8px; border-radius: 6px; font-weight: 600; font-size: 0.85rem; color: #fff; display: inline-block; }
+</style>
+""", unsafe_allow_html=True)
 
 def main():
-    # ── 7 PM IST Scheduled Refresh ──
-    # Lightweight background check every 30 minutes. Only triggers data refresh at 7:00 PM IST.
-    st_autorefresh(interval=1800000, limit=None, key="bg_poll_30m")
-    
-    now_ist = datetime.now(IST)
-    # Catches 6:55 PM – 7:29 PM IST
-    is_7pm_window = (now_ist.hour == 18 and now_ist.minute >= 55) or \
-                    (now_ist.hour == 19 and now_ist.minute < 30)
-
-    today_str = now_ist.strftime("%Y-%m-%d")
-    
-    if is_7pm_window and st.session_state.get("last_scheduled_run") != today_str:
-        st.cache_data.clear()
-        st.session_state["last_scheduled_run"] = today_str
-        st.rerun()
+    now_ist = datetime.now(IST).strftime("%d %b %Y · %I:%M %p IST")
+    st.markdown('<p class="hero">📊 Nifty Total Market Stage 2 Screener</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="sub-hero">EOD Analysis · 7-Point Weinstein Score · {now_ist}</p>', unsafe_allow_html=True)
 
     with st.sidebar:
-        st.markdown('<p class="sb-head">⚙️ Controls</p>', unsafe_allow_html=True)
-        if st.button("🔍 Force Run Screener Now", use_container_width=True, type="primary"):
-            st.cache_data.clear()
-            st.session_state.pop("last_scheduled_run", None)
-            st.rerun()
+        st.markdown('<p class="sb-head">🎛️ Controls</p>', unsafe_allow_html=True)
+        constituents = load_constituents()
+        indices = st.multiselect(
+            "Select Indices", options=list(constituents.keys()),
+            default=["Nifty 50", "Nifty Next 50"],
+            help="Combine multiple indices for Nifty 750 coverage"
+        )
+        rsi_toggle = st.toggle("Filter: RSI between 50–70", value=False)
+        show_illiquid = st.toggle("Show Illiquid Stocks (Vol < 1L)", value=False)
+        
         st.markdown("---")
-        st.markdown('<p class="sb-head">📋 Screening Criteria</p>', unsafe_allow_html=True)
-        st.markdown("""
-        <div class="criteria">
-        <strong>Stage 2 Breakout:</strong><br>
-        ✅ Close &gt; 20-DMA <em>and</em> 50-DMA<br>
-        ✅ Volume &ge; 150 % of 10-day avg<br>
-        ✅ RSI(14) between 50 – 70<br>
-        ✅ Volume &ge; 1,00,000 shares<br><br>
-        <strong>Breakout tags:</strong><br>
-        🔴 <em>Fresh</em> — crossed DMA today<br>
-        🟢 <em>Sustained</em> — already above DMAs
-        </div>
-        """, unsafe_allow_html=True)
-        st.markdown("---")
-        st.caption("🕒 **Auto-refresh scheduled daily at 7:00 PM IST** for EOD data.")
-        st.caption("ℹ️ **Data Source:** NSE constituents + Yahoo Finance EOD.")
+        st.caption("ℹ️ Runs on EOD data only. No intra-day refresh.")
+        st.caption("🔧 Backend testing available via `python backend_test.py`")
 
-    # ── header ──
-    now_str = now_ist.strftime("%d %b %Y · %I:%M %p IST")
-    st.markdown('<p class="hero-title">🚀 Stage 2 Breakout Screener</p>', unsafe_allow_html=True)
-    st.markdown(f'<p class="hero-sub">Nifty Microcap 250 · EOD Analysis · {now_str}</p>', unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
+    if not indices:
+        st.warning("👈 Select at least one index from the sidebar to begin.")
+        return
 
-    # ── run screener ──
-    df, total, fetched, errors, data_date = run_screener()
-    n_pass = len(df)
-
-    # ── metric cards ──
-    c1, c2, c3, c4 = st.columns(4)
-    c1.markdown(_card("card-purple", total, "Total Constituents"), unsafe_allow_html=True)
-    c2.markdown(_card("card-slate", fetched, "Valid Data Fetched"), unsafe_allow_html=True)
-    c3.markdown(_card("card-teal", n_pass, "Breakout Stocks"), unsafe_allow_html=True)
-    c4.markdown(_card("card-rose", errors, "Skipped / Errors"), unsafe_allow_html=True)
-    if data_date:
-        st.caption(f"📅 Latest trading date in dataset: **{data_date}**")
-
-    # ── results table ──
-    st.markdown("---")
+    df, valid_count = run_universe_screener(indices, rsi_filter=rsi_toggle)
     if df.empty:
-        st.info("📊 **No stocks passed the Stage 2 Breakout criteria today.**\n\nPossible reasons:\n• Market in consolidation / correction\n• Insufficient volume on breakout attempts\n• RSI outside 50-70 range for most breakouts\n• Run after 7 PM IST for complete EOD data")
-    else:
-        st.markdown(f"### 🎯 {n_pass} Stock{'s' if n_pass != 1 else ''} Passed All Criteria")
-        st.caption("Click any column header to sort · Hover for full values")
-        st.dataframe(
-            df.drop(columns=["Data_Date"]),
-            use_container_width=True,
-            hide_index=True,
-            height=min(620, max(360, n_pass * 38 + 44)),
-            column_config={
-                "Symbol":      st.column_config.TextColumn("Ticker", width="small"),
-                "Close":       st.column_config.NumberColumn("Close (₹)", format="₹ %.2f", width="medium"),
-                "Day_Chg":     st.column_config.NumberColumn("Day Chg %", format="%.2f %%", width="medium"),
-                "DMA_20":      st.column_config.NumberColumn("20 DMA (₹)", format="₹ %.2f", width="medium"),
-                "DMA_50":      st.column_config.NumberColumn("50 DMA (₹)", format="₹ %.2f", width="medium"),
-                "Above_20":    st.column_config.NumberColumn("Above 20 DMA %", format="%.2f %%", width="medium"),
-                "Above_50":    st.column_config.NumberColumn("Above 50 DMA %", format="%.2f %%", width="medium"),
-                "Volume":      st.column_config.NumberColumn("Volume", format="%,d", width="medium"),
-                "Avg_Vol_10D": st.column_config.NumberColumn("10D Avg Vol", format="%,d", width="medium"),
-                "Vol_Ratio":   st.column_config.NumberColumn("Vol Ratio", format="%.2f x", width="medium"),
-                "RSI":         st.column_config.NumberColumn("RSI (14)", format="%.1f", width="medium"),
-                "Breakout":    st.column_config.TextColumn("Breakout", width="medium"),
-            },
-        )
-        csv = df.to_csv(index=False).encode("utf-8")
-        stamp = now_ist.strftime("%Y%m%d")
-        st.download_button(
-            label="📥 Download CSV", data=csv,
-            file_name=f"stage2_breakout_microcap250_{stamp}.csv",
-            mime="text/csv", use_container_width=True,
-        )
+        st.info("No stocks matched the criteria with current filters.")
+        return
+
+    df_display = df[~df["Illiquid"]] if not show_illiquid else df
+    if df_display.empty:
+        st.info("All matching stocks are marked Illiquid. Toggle 'Show Illiquid Stocks' to view them.")
+        return
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Universe Size", len(indices))
+    c2.metric("Valid Data", valid_count)
+    c3.metric("Stage 2 Matches", len(df))
+    c4.metric("Displayed (Liquid)", len(df_display))
+
+    def stage_tag(row):
+        return f'<span class="tag" style="background:{row["Color"]}">{row["Stage"]}</span>'
+    df_display["Stage"] = df_display.apply(stage_tag, axis=1)
+    
+    st.dataframe(
+        df_display[["Symbol", "Index", "Stage", "Score", "Close", "Vol_Ratio", "RSI", "Illiquid"]],
+        use_container_width=True, hide_index=True, column_config={
+            "Symbol": st.column_config.TextColumn("Ticker"),
+            "Index": st.column_config.TextColumn("Source Index"),
+            "Stage": st.column_config.TextColumn("Classification", width="medium"),
+            "Score": st.column_config.NumberColumn("Score", format="%d/7"),
+            "Close": st.column_config.NumberColumn("Close (₹)", format="%.2f"),
+            "Vol_Ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2f x"),
+            "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f"),
+            "Illiquid": st.column_config.CheckboxColumn("Illiquid")
+        }, height=600
+    )
+
+    csv = df_display.drop(columns=["Stage", "Color"]).to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download Screener Results", csv, 
+        file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
+        mime="text/csv", use_container_width=True
+    )
 
 if __name__ == "__main__":
     main()
