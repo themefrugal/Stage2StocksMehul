@@ -116,8 +116,8 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
 
     score = 0
     if vr >= 2.0: score += 1
-    if h1 >= h.rolling(HH_HL_LOOKBACK).max().shift(1).iloc[-1]: score += 1
-    if l1 >= l.rolling(HH_HL_LOOKBACK).min().shift(1).iloc[-1]: score += 1
+    if c1 >= c.rolling(HH_HL_LOOKBACK).max().shift(1).iloc[-1]: score += 1
+    if c1 >= c.rolling(HH_HL_LOOKBACK).min().shift(1).iloc[-1]: score += 1
     if c1 > m50 and ma50.iloc[-1] > ma50.iloc[-MA_RISING_LOOKBACK]: score += 1
     if c1 > m200 and ma200.iloc[-1] > ma200.iloc[-MA_RISING_LOOKBACK]: score += 1
     if c1 > m150: score += 1
@@ -155,8 +155,8 @@ def check_weinstein_retest(df: pd.DataFrame) -> bool:
     avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
     
     # 1. Find the most recent 50-day High Breakout WITH volume confirmation
-    hh_50 = h.rolling(50).max()
-    breakout_mask = (h == hh_50) & (v / avg_vol >= 2.0)
+    hh_50 = c.rolling(50).max()
+    breakout_mask = (c == hh_50) & (v / avg_vol >= 2.0)
     
     # Shift to avoid today's breakout (we want a pullback *after* breakout)
     breakout_mask = breakout_mask.shift(1).fillna(False)
@@ -168,7 +168,7 @@ def check_weinstein_retest(df: pd.DataFrame) -> bool:
         return False
         
     last_breakout_idx = recent_breakouts[-1]
-    breakout_level = h.loc[last_breakout_idx]
+    breakout_level = c.loc[last_breakout_idx]
     breakout_vol = v.loc[last_breakout_idx]
     
     # 2. Check if price pulled back TO the breakout level
