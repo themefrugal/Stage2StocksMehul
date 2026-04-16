@@ -29,6 +29,15 @@ MA_RISING_LOOKBACK = 50      # Change here if needed
 RESULT_CACHE_DIR = "daily_cache"
 os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 
+# ══════════════════════════════════════════════════════════════
+# NEW: Weinstein Retest Parameters
+# ══════════════════════════════════════════════════════════════
+RETEST_LOOKBACK_DAYS = 20    # Days to look back for initial breakout
+RETEST_TOLERANCE = 0.02      # ±2% proximity to breakout level
+BOUNCE_CONFIRMATION = 0.02   # Close must be ≥2% above breakout level
+VOL_DRYUP_RATIO = 0.75       # Pullback avg vol < 75% of breakout vol
+# ══════════════════════════════════════════════════════════════
+
 # ──────────────────────────────────────────────
 # HOLIDAY & TRADING DAY RESOLVER
 # ──────────────────────────────────────────────
@@ -94,16 +103,13 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
     ma150 = c.rolling(150).mean()
     ma200 = c.rolling(200).mean()
     
-    # Use configurable VOL_AVG_PERIOD for average volume
     avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
-    
     rsi = _rsi_wilder(c)
 
     c1, h1, l1, v1 = c.iloc[-1], h.iloc[-1], l.iloc[-1], v.iloc[-1]
     m50, m150, m200 = ma50.iloc[-1], ma150.iloc[-1], ma200.iloc[-1]
     r = rsi.iloc[-1]
     
-    # Volume Ratio uses the same configurable average
     vr = v1 / avg_vol.iloc[-1] if avg_vol.iloc[-1] > 0 else 0
     
     if np.isnan([m50, m150, m200, vr, r]).any(): return None
@@ -124,13 +130,72 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
 
     return {
         "Score": score, "Stage": stage,
-        # Illiquid check now uses Average Volume over VOL_AVG_PERIOD
         "Illiquid": avg_vol.iloc[-1] < MIN_VOLUME,
         "Close": round(c1, 2), "Volume": int(v1), "Vol_Ratio": round(vr, 2),
         "RSI": round(r, 1), "MA50": round(m50, 2), "MA150": round(m150, 2), 
         "MA200": round(m200, 2), "MA_Stack": m50 > m150 > m200,
         "Avg_Vol": int(np.floor(avg_vol.iloc[-1]))
     }
+
+# ══════════════════════════════════════════════════════════════
+# NEW: Weinstein Retest Detection
+# ══════════════════════════════════════════════════════════════
+def check_weinstein_retest(df: pd.DataFrame) -> bool:
+    """
+    Checks if the stock recently broke out on volume and successfully
+    retested that breakout level with volume contraction.
+    """
+    if len(df) < RETEST_LOOKBACK_DAYS + 50:
+        return False
+        
+    c = df["Close"]
+    h = df["High"]
+    l = df["Low"]
+    v = df["Volume"]
+    avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
+    
+    # 1. Find the most recent 50-day High Breakout WITH volume confirmation
+    hh_50 = h.rolling(50).max()
+    breakout_mask = (h == hh_50) & (v / avg_vol >= 2.0)
+    
+    # Shift to avoid today's breakout (we want a pullback *after* breakout)
+    breakout_mask = breakout_mask.shift(1).fillna(False)
+    
+    # Limit search to last RETEST_LOOKBACK_DAYS
+    recent_breakouts = df.index[breakout_mask & (df.index >= df.index[-RETEST_LOOKBACK_DAYS])]
+    
+    if len(recent_breakouts) == 0:
+        return False
+        
+    last_breakout_idx = recent_breakouts[-1]
+    breakout_level = h.loc[last_breakout_idx]
+    breakout_vol = v.loc[last_breakout_idx]
+    
+    # 2. Check if price pulled back TO the breakout level
+    pullback_period = df.loc[last_breakout_idx:].iloc[1:]  # Exclude breakout day
+    if pullback_period.empty:
+        return False
+        
+    pullback_low = pullback_period["Low"].min()
+    
+    # Proximity check: low within tolerance of breakout level
+    near_breakout = (pullback_low <= breakout_level * (1 + RETEST_TOLERANCE)) and \
+                    (pullback_low >= breakout_level * (1 - RETEST_TOLERANCE))
+    if not near_breakout:
+        return False
+        
+    # 3. Confirm support held: current close bounced above breakout level
+    current_close = c.iloc[-1]
+    if current_close < breakout_level * (1 + BOUNCE_CONFIRMATION):
+        return False
+        
+    # 4. Volume contraction during pullback
+    pullback_vol_avg = pullback_period["Volume"].mean()
+    if pullback_vol_avg > breakout_vol * VOL_DRYUP_RATIO:
+        return False
+        
+    return True
+# ══════════════════════════════════════════════════════════════
 
 # ──────────────────────────────────────────────
 # FETCH & CACHE ORCHESTRATOR (FULL UNIVERSE)
@@ -144,7 +209,6 @@ def fetch_full_universe(rsi_filter: bool) -> tuple[pd.DataFrame, int]:
     with open(const_path, "r") as f:
         constituents = json.load(f)
 
-    # Flatten ALL symbols from ALL indices
     all_symbols = list(dict.fromkeys([s for syms in constituents.values() for s in syms]))
     tickers = [f"{s}.NS" for s in all_symbols]
 
@@ -166,8 +230,12 @@ def fetch_full_universe(rsi_filter: bool) -> tuple[pd.DataFrame, int]:
             if res:
                 res["Symbol"] = sym
                 res["Index"] = next((idx for idx, syms in constituents.items() if sym in syms), "Unknown")
+                # ─── ADD RETEST FLAG ──────────────────────────────────
+                res["Retest"] = check_weinstein_retest(sub)
+                # ───────────────────────────────────────────────────────
                 results.append(res)
-        except: continue
+        except:
+            continue
 
     df = pd.DataFrame(results)
     if df.empty: return pd.DataFrame(), 0
@@ -178,25 +246,19 @@ def resolve_screener_data(rsi_filter: bool):
     """Implements exact logic: Time-based target → Find valid trading day → Cache/Fetch."""
     now = datetime.now(IST)
     
-    # 1. Determine starting date based on 7 PM cutoff
     start_date = now.strftime("%Y-%m-%d") if now.hour >= 19 else (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    
-    # 2. Find last valid trading day (handles weekends/holidays)
     holidays = load_nse_holidays()
     target_key = get_last_valid_trading_date(start_date, holidays)
     
-    # 3. Check cache first
     df = load_json_cache(target_key)
     if df is not None:
-        return df, target_key, True  # (data, date, is_cached)
+        return df, target_key, True
         
-    # 4. Cache miss → Fetch FULL UNIVERSE
     df, valid_count = fetch_full_universe(rsi_filter)
     if not df.empty:
         save_json_cache(df, target_key)
         return df, target_key, False
         
-    # 5. Fetch failed → Look for any older cache
     try:
         files = sorted([f.replace(".json", "") for f in os.listdir(RESULT_CACHE_DIR) if f.endswith(".json")], reverse=True)
         for f in files:
@@ -207,7 +269,7 @@ def resolve_screener_data(rsi_filter: bool):
     except Exception:
         pass
         
-    return pd.DataFrame(), target_key, True  # Fallback to empty
+    return pd.DataFrame(), target_key, True
 
 # ──────────────────────────────────────────────
 # STREAMLIT UI
@@ -226,7 +288,6 @@ def main():
     st.markdown('<p class="hero">📊 Nifty Total Market Stage 2 Screener</p>', unsafe_allow_html=True)
     st.markdown(f'<p class="sub-hero">EOD Analysis · 7-Point Weinstein Score · {now_ist}</p>', unsafe_allow_html=True)
 
-    # ── CONTROL PANEL (Batched) ──
     with st.sidebar.form("controls", clear_on_submit=False):
         st.markdown('<p class="sb-head">🔍 Filters</p>', unsafe_allow_html=True)
         rsi_toggle = st.toggle("Filter: RSI between 50–70", value=False)
@@ -254,7 +315,6 @@ def main():
         st.info("👈 Select indices/filters and click **Apply Filters & Show** to begin.")
         return
 
-    # ── RESOLVE DATA (Fetches Full Universe if cache miss) ──
     df, cache_date, is_cached = resolve_screener_data(rsi_toggle)
     
     if df.empty:
@@ -266,7 +326,6 @@ def main():
     elif cache_date != (datetime.now(IST) - timedelta(days=1 if datetime.now(IST).hour < 19 else 0)).strftime("%Y-%m-%d"):
         st.info(f"ℹ️ Market closed or data pending. Showing latest available cache from **{cache_date}**.")
 
-    # ── APPLY UI FILTERS LOCALLY (Instant) ──
     display_df = df.copy()
     if selected_indices: 
         display_df = display_df[display_df["Index"].isin(selected_indices)]
@@ -279,12 +338,19 @@ def main():
         st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
-    # Text-based ILLIQ indicator
-    display_df["Symbol"] = display_df.apply(
-        lambda r: f"{r['Symbol']} 🚩 ILLIQ" if r['Illiquid'] else r['Symbol'], axis=1
-    )
+    # ─── DECORATE SYMBOL WITH ILLIQ AND RETEST FLAGS ─────────────────
+    def decorate_symbol(row):
+        sym = row["Symbol"]
+        flags = []
+        if row.get("Illiquid", False):
+            flags.append("🚩 ILLIQ")
+        if row.get("Retest", False):
+            flags.append("🔄 RT")
+        return f"{sym} {' '.join(flags)}".strip()
+    
+    display_df["Symbol"] = display_df.apply(decorate_symbol, axis=1)
+    # ───────────────────────────────────────────────────────────────
 
-    # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Avg Vol, Vol Ratio, RSI
     display_cols = ["Symbol", "Index", "Stage", "Score", "Close", "Volume", "Avg_Vol", "Vol_Ratio", "RSI"]
     display_df = display_df[display_cols]
 
@@ -294,7 +360,6 @@ def main():
     c3.metric("Matches (Filters)", len(display_df))
     c4.metric("Strong Stage 2", len(display_df[display_df["Score"] >= 6]))
 
-    # Row Coloring Logic
     def color_rows(row):
         bg_map = {
             "🟢 Strong Stage 2": "#ecfdf5",
@@ -306,10 +371,9 @@ def main():
 
     styled_df = display_df.style.apply(color_rows, axis=1)
 
-    # Render Table - Fixed deprecation
     st.dataframe(
         styled_df,
-        width="stretch",  # Replaced use_container_width=True
+        width="stretch",
         hide_index=True, 
         column_config={
             "Symbol": st.column_config.TextColumn("Ticker", width="medium"),
@@ -325,13 +389,12 @@ def main():
         height=650
     )
 
-    # Export CSV
     csv = display_df.to_csv(index=False).encode("utf-8")
     st.download_button(
         "📥 Download Screener Results", csv, 
         file_name=f"stage2_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
         mime="text/csv",
-        width="stretch"  # Replaced use_container_width=True
+        width="stretch"
     )
 
 if __name__ == "__main__":
