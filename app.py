@@ -2,7 +2,7 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
 ║   Stage 2 Breakout Screener — Nifty Total Market (750)     ║
-║   7-Point Weinstein Scoring | Smart EOD Cache & Fetch Logic║
+║   7-Point Weinstein Scoring | Full-Universe Daily Cache    ║
 ║   DATA: constituents.json | HOLIDAYS: nse_holidays.json    ║
 ╚══════════════════════════════════════════════════════════════╝
 """
@@ -23,9 +23,9 @@ warnings.filterwarnings("ignore")
 IST = ZoneInfo("Asia/Kolkata")
 HISTORY_PERIOD = "2y"
 MIN_VOLUME = 100_000
-VOL_AVG_PERIOD = 10          # Average volume period: 10/20/50 days
+VOL_AVG_PERIOD = 10          # Configurable: 10, 20, or 50 days (Change here)
 HH_HL_LOOKBACK = 50          # Change here if needed
-MA_RISING_LOOKBACK = 50      # Change here if needed
+MA_RISING_LOOKBACK = 10      # Change here if needed
 RESULT_CACHE_DIR = "daily_cache"
 os.makedirs(RESULT_CACHE_DIR, exist_ok=True)
 
@@ -93,13 +93,19 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
     ma50 = c.rolling(50).mean()
     ma150 = c.rolling(150).mean()
     ma200 = c.rolling(200).mean()
+    
+    # Use configurable VOL_AVG_PERIOD for average volume
     avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
+    
     rsi = _rsi_wilder(c)
 
     c1, h1, l1, v1 = c.iloc[-1], h.iloc[-1], l.iloc[-1], v.iloc[-1]
     m50, m150, m200 = ma50.iloc[-1], ma150.iloc[-1], ma200.iloc[-1]
     r = rsi.iloc[-1]
+    
+    # Volume Ratio uses the same configurable average
     vr = v1 / avg_vol.iloc[-1] if avg_vol.iloc[-1] > 0 else 0
+    
     if np.isnan([m50, m150, m200, vr, r]).any(): return None
 
     score = 0
@@ -118,6 +124,7 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
 
     return {
         "Score": score, "Stage": stage,
+        # Illiquid check now uses Average Volume over VOL_AVG_PERIOD
         "Illiquid": avg_vol.iloc[-1] < MIN_VOLUME,
         "Close": round(c1, 2), "Volume": int(v1), "Vol_Ratio": round(vr, 2),
         "RSI": round(r, 1), "MA50": round(m50, 2), "MA150": round(m150, 2), 
@@ -125,9 +132,10 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
     }
 
 # ──────────────────────────────────────────────
-# FETCH & CACHE ORCHESTRATOR
+# FETCH & CACHE ORCHESTRATOR (FULL UNIVERSE)
 # ──────────────────────────────────────────────
-def fetch_and_score_universe(selected_indices: list[str], rsi_filter: bool) -> tuple[pd.DataFrame, int]:
+def fetch_full_universe(rsi_filter: bool) -> tuple[pd.DataFrame, int]:
+    """Downloads ALL indices, scores them, and returns the complete DF."""
     const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
     if not os.path.exists(const_path):
         st.error("❌ `constituents.json` missing.")
@@ -135,14 +143,12 @@ def fetch_and_score_universe(selected_indices: list[str], rsi_filter: bool) -> t
     with open(const_path, "r") as f:
         constituents = json.load(f)
 
-    symbols = []
-    for idx in selected_indices:
-        symbols.extend(constituents.get(idx, []))
-    symbols = list(dict.fromkeys(symbols))
-    tickers = [f"{s}.NS" for s in symbols]
+    # Flatten ALL symbols from ALL indices
+    all_symbols = list(dict.fromkeys([s for syms in constituents.values() for s in syms]))
+    tickers = [f"{s}.NS" for s in all_symbols]
 
     try:
-        with st.spinner("🌐 Fetching EOD data..."):
+        with st.spinner("🌐 Fetching EOD data for full Nifty 750 universe..."):
             raw = yf.download(tickers, period=HISTORY_PERIOD, group_by="ticker", 
                               threads=True, progress=False, auto_adjust=True)
     except Exception as e:
@@ -158,7 +164,7 @@ def fetch_and_score_universe(selected_indices: list[str], rsi_filter: bool) -> t
             res = score_stage2(sub)
             if res:
                 res["Symbol"] = sym
-                res["Index"] = next((idx for idx in selected_indices if sym in constituents.get(idx, [])), "Unknown")
+                res["Index"] = next((idx for idx, syms in constituents.items() if sym in syms), "Unknown")
                 results.append(res)
         except: continue
 
@@ -167,7 +173,7 @@ def fetch_and_score_universe(selected_indices: list[str], rsi_filter: bool) -> t
     if rsi_filter: df = df[(df["RSI"] >= 50) & (df["RSI"] <= 70)]
     return df.sort_values("Score", ascending=False), len(df)
 
-def resolve_screener_data(selected_indices: list[str], rsi_filter: bool):
+def resolve_screener_data(rsi_filter: bool):
     """Implements exact logic: Time-based target → Find valid trading day → Cache/Fetch."""
     now = datetime.now(IST)
     
@@ -183,13 +189,13 @@ def resolve_screener_data(selected_indices: list[str], rsi_filter: bool):
     if df is not None:
         return df, target_key, True  # (data, date, is_cached)
         
-    # 4. Cache miss → Fetch
-    df, valid_count = fetch_and_score_universe(selected_indices, rsi_filter)
+    # 4. Cache miss → Fetch FULL UNIVERSE
+    df, valid_count = fetch_full_universe(rsi_filter)
     if not df.empty:
         save_json_cache(df, target_key)
         return df, target_key, False
         
-    # 5. Fetch failed or returned empty → Look for any older cache
+    # 5. Fetch failed → Look for any older cache
     try:
         files = sorted([f.replace(".json", "") for f in os.listdir(RESULT_CACHE_DIR) if f.endswith(".json")], reverse=True)
         for f in files:
@@ -200,7 +206,7 @@ def resolve_screener_data(selected_indices: list[str], rsi_filter: bool):
     except Exception:
         pass
         
-    return pd.DataFrame(), target_key, True  # Fallback to empty if absolutely nothing exists
+    return pd.DataFrame(), target_key, True  # Fallback to empty
 
 # ──────────────────────────────────────────────
 # STREAMLIT UI
@@ -211,7 +217,6 @@ st.markdown("""
 .sb-head { font-weight: 700; margin-bottom: 0.5rem; font-size: 0.95rem; }
 .hero { text-align: center; font-size: 1.8rem; font-weight: 800; margin-bottom: 0.2rem; }
 .sub-hero { text-align: center; color: #64748b; margin-top: -8px; }
-.illiq-tag { color: #dc2626; font-size: 0.75em; font-weight: 700; margin-left: 4px; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -224,7 +229,7 @@ def main():
     with st.sidebar.form("controls", clear_on_submit=False):
         st.markdown('<p class="sb-head">🔍 Filters</p>', unsafe_allow_html=True)
         rsi_toggle = st.toggle("Filter: RSI between 50–70", value=False)
-        show_illiquid = st.toggle("Show Illiquid Stocks (Vol < 1L)", value=False)
+        show_illiquid = st.toggle("Show Illiquid Stocks (Avg Vol < 1L)", value=False)
         
         st.markdown("---")
         st.markdown('<p class="sb-head">📦 Select Indices</p>', unsafe_allow_html=True)
@@ -232,11 +237,10 @@ def main():
         const_path = os.path.join(os.path.dirname(__file__), "constituents.json")
         idx_options = list(json.load(open(const_path, "r")).keys()) if os.path.exists(const_path) else []
         
-        # Checkbox layout
-        selected_indices = []
         cols = st.columns(2)
+        selected_indices = []
         for i, idx in enumerate(idx_options):
-            default_checked = idx in ["Nifty 50", "Nifty Next 50", "Nifty Midcap 150", "Nifty Smallcap 250", "Nifty Microcap 250"]
+            default_checked = idx in ["Nifty 50", "Nifty Next 50"]
             if cols[i % 2].checkbox(idx, value=default_checked):
                 selected_indices.append(idx)
         
@@ -249,8 +253,8 @@ def main():
         st.info("👈 Select indices/filters and click **Apply Filters & Show** to begin.")
         return
 
-    # ── RESOLVE DATA (Cache/Fetch Logic) ──
-    df, cache_date, is_cached = resolve_screener_data(selected_indices, rsi_toggle)
+    # ── RESOLVE DATA (Fetches Full Universe if cache miss) ──
+    df, cache_date, is_cached = resolve_screener_data(rsi_toggle)
     
     if df.empty:
         st.warning(f"📅 No data available for **{cache_date}**. Yahoo Finance may be syncing. Try again in 30 mins.")
@@ -261,17 +265,20 @@ def main():
     elif cache_date != (datetime.now(IST) - timedelta(days=1 if datetime.now(IST).hour < 19 else 0)).strftime("%Y-%m-%d"):
         st.info(f"ℹ️ Market closed or data pending. Showing latest available cache from **{cache_date}**.")
 
-    # ── APPLY FILTERS & PREPARE DISPLAY ──
+    # ── APPLY UI FILTERS LOCALLY (Instant) ──
     display_df = df.copy()
-    if selected_indices: display_df = display_df[display_df["Index"].isin(selected_indices)]
-    if rsi_toggle: display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
-    if not show_illiquid: display_df = display_df[~display_df["Illiquid"]]
+    if selected_indices: 
+        display_df = display_df[display_df["Index"].isin(selected_indices)]
+    if rsi_toggle: 
+        display_df = display_df[(display_df["RSI"] >= 50) & (display_df["RSI"] <= 70)]
+    if not show_illiquid: 
+        display_df = display_df[~display_df["Illiquid"]]
 
     if display_df.empty:
         st.warning("No stocks match the selected filters. Adjust criteria or show illiquid stocks.")
         return
 
-    # Inline ILLIQ tag next to ticker
+    # Text-based ILLIQ indicator
     display_df["Symbol"] = display_df.apply(
         lambda r: f"{r['Symbol']} 🚩 ILLIQ" if r['Illiquid'] else r['Symbol'], axis=1
     )
@@ -279,9 +286,6 @@ def main():
     # EXPLICIT COLUMN ORDER: Ticker, Source, Classification, Score, Close, Vol, Vol Ratio, RSI
     display_cols = ["Symbol", "Index", "Stage", "Score", "Close", "Volume", "Vol_Ratio", "RSI"]
     display_df = display_df[display_cols]
-
-    # Drop all helper columns before styling to prevent rendering conflicts
-    display_df = display_df.drop(columns=[c for c in display_df.columns if c not in display_cols], errors="ignore")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Cache Date", cache_date)
@@ -301,7 +305,7 @@ def main():
 
     styled_df = display_df.style.apply(color_rows, axis=1)
 
-    # Render Table - Fixed deprecation & blank row issue
+    # Render Table - Fixed deprecation
     st.dataframe(
         styled_df,
         width="stretch",  # Replaced use_container_width=True
