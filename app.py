@@ -318,9 +318,9 @@ def main():
             "Score": st.column_config.NumberColumn("Score", format="%d/7", width="small"),
             "Close": st.column_config.NumberColumn("Close (₹)", format="%.2f", width="small"),
             "Volume": st.column_config.NumberColumn("Volume", format="%,d", width="small"),
-            "Avg_Vol": st.column_config.NumberColumn("Avg Vol (10d)", format="%,d", width="small")
+            "Avg_Vol": st.column_config.NumberColumn("Avg Vol (10d)", format="%,d", width="small"),
             "Vol_Ratio": st.column_config.NumberColumn("Vol Ratio", format="%.2f x", width="small"),
-            "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small"),
+            "RSI": st.column_config.NumberColumn("RSI(14)", format="%.1f", width="small")
         }, 
         height=650
     )
