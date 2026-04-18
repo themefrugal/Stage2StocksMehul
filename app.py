@@ -663,108 +663,108 @@ def momentum_screener_ui():
         # ── FETCH & PROCESS DATA ──
         df, total_count = fetch_momentum_universe(selected_universe)
 
-    if df.empty:
-        st.warning(f"📅 No data available for {selected_universe}. This could be due to:\n\n1. Yahoo Finance API returning no data\n2. Market holiday/weekend\n3. Invalid symbols in constituents.json\n\nTry again in a few minutes or check your internet connection.")
-        return
+        if df.empty:
+            st.warning(f"📅 No data available for {selected_universe}. This could be due to:\n\n1. Yahoo Finance API returning no data\n2. Market holiday/weekend\n3. Invalid symbols in constituents.json\n\nTry again in a few minutes or check your internet connection.")
+            return
 
-    st.success(f"✅ Fetched data for {total_count} stocks in {selected_universe}")
+        st.success(f"✅ Fetched data for {total_count} stocks in {selected_universe}")
 
-    # ── APPLY FILTERS ──
-    display_df = df.copy()
+        # ── APPLY FILTERS ──
+        display_df = df.copy()
 
-    # Minimum Annual Return filter (using 1Y_Change as proxy for annual return)
-    if min_annual_return > 0:
-        display_df = display_df[display_df["1Y_Change"].notna() & (display_df["1Y_Change"] >= min_annual_return)]
+        # Minimum Annual Return filter (using 1Y_Change as proxy for annual return)
+        if min_annual_return > 0:
+            display_df = display_df[display_df["1Y_Change"].notna() & (display_df["1Y_Change"] >= min_annual_return)]
 
-    # Close > 100 DMA
-    if close_above_100dma:
-        display_df = display_df[display_df["Close"] > display_df["DMA100"]]
+        # Close > 100 DMA
+        if close_above_100dma:
+            display_df = display_df[display_df["Close"] > display_df["DMA100"]]
 
-    # Close > 200 DMA
-    if close_above_200dma:
-        display_df = display_df[display_df["Close"] > display_df["DMA200"]]
+        # Close > 200 DMA
+        if close_above_200dma:
+            display_df = display_df[display_df["Close"] > display_df["DMA200"]]
 
-    # 52W High Filter: last close should be within X% of 52W high
-    # e.g., if 25% entered, include stocks where close > 0.75 * 52W high
-    threshold_multiplier = (100 - pct_from_52w_high) / 100
-    display_df = display_df[display_df["Close"] >= (threshold_multiplier * display_df["52w_High"])]
+        # 52W High Filter: last close should be within X% of 52W high
+        # e.g., if 25% entered, include stocks where close > 0.75 * 52W high
+        threshold_multiplier = (100 - pct_from_52w_high) / 100
+        display_df = display_df[display_df["Close"] >= (threshold_multiplier * display_df["52w_High"])]
 
-    # Max Circuits
-    display_df = display_df[display_df["Circuit_Count"] <= max_circuits]
+        # Max Circuits
+        display_df = display_df[display_df["Circuit_Count"] <= max_circuits]
 
-    # Positive Days filters
-    if pos_days_3m > 0:
-        display_df = display_df[display_df["Pos_Days_3M"].notna() & (display_df["Pos_Days_3M"] >= pos_days_3m)]
-    if pos_days_6m > 0:
-        display_df = display_df[display_df["Pos_Days_6M"].notna() & (display_df["Pos_Days_6M"] >= pos_days_6m)]
-    if pos_days_12m > 0:
-        display_df = display_df[display_df["Pos_Days_12M"].notna() & (display_df["Pos_Days_12M"] >= pos_days_12m)]
+        # Positive Days filters
+        if pos_days_3m > 0:
+            display_df = display_df[display_df["Pos_Days_3M"].notna() & (display_df["Pos_Days_3M"] >= pos_days_3m)]
+        if pos_days_6m > 0:
+            display_df = display_df[display_df["Pos_Days_6M"].notna() & (display_df["Pos_Days_6M"] >= pos_days_6m)]
+        if pos_days_12m > 0:
+            display_df = display_df[display_df["Pos_Days_12M"].notna() & (display_df["Pos_Days_12M"] >= pos_days_12m)]
 
-    if display_df.empty:
-        st.warning("No stocks match the selected filters. Adjust criteria and try again.")
-        return
+        if display_df.empty:
+            st.warning("No stocks match the selected filters. Adjust criteria and try again.")
+            return
 
-    # ── CALCULATE SHARPE FOR SORTING ──
-    display_df["Avg_Sharpe"] = display_df.apply(lambda row: _calculate_avg_sharpe(row, sort_method), axis=1)
-    display_df = display_df[display_df["Avg_Sharpe"].notna()]
+        # ── CALCULATE SHARPE FOR SORTING ──
+        display_df["Avg_Sharpe"] = display_df.apply(lambda row: _calculate_avg_sharpe(row, sort_method), axis=1)
+        display_df = display_df[display_df["Avg_Sharpe"].notna()]
 
-    if display_df.empty:
-        st.warning("No stocks have valid Sharpe ratios for the selected sorting method.")
-        return
+        if display_df.empty:
+            st.warning("No stocks have valid Sharpe ratios for the selected sorting method.")
+            return
 
-    # Sort by Sharpe descending
-    display_df = display_df.sort_values("Avg_Sharpe", ascending=False)
+        # Sort by Sharpe descending
+        display_df = display_df.sort_values("Avg_Sharpe", ascending=False)
 
-    # ── PREPARE OUTPUT COLUMNS ──
-    output_cols = [
-        "Symbol", "Index", "Close", "Avg_Sharpe", "Volatility", "52w_High",
-        "Vol_Median", "1Y_Change", "Pct_From_52W_High", "Circuit_Count"
-    ]
-    display_df = display_df[output_cols]
+        # ── PREPARE OUTPUT COLUMNS ──
+        output_cols = [
+            "Symbol", "Index", "Close", "Avg_Sharpe", "Volatility", "52w_High",
+            "Vol_Median", "1Y_Change", "Pct_From_52W_High", "Circuit_Count"
+        ]
+        display_df = display_df[output_cols]
 
-    # Rename for display
-    display_df = display_df.rename(columns={
-        "Avg_Sharpe": "Sharpe",
-        "Vol_Median": "Median Vol",
-        "1Y_Change": "1Y Change",
-        "Pct_From_52W_High": "% from 52wH",
-        "Circuit_Count": "Circuit Close"
-    })
+        # Rename for display
+        display_df = display_df.rename(columns={
+            "Avg_Sharpe": "Sharpe",
+            "Vol_Median": "Median Vol",
+            "1Y_Change": "1Y Change",
+            "Pct_From_52W_High": "% from 52wH",
+            "Circuit_Count": "Circuit Close"
+        })
 
-    # ── METRICS ──
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Universe", selected_universe)
-    c2.metric("Total in Universe", total_count)
-    c3.metric("Matches (Filters)", len(display_df))
+        # ── METRICS ──
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Universe", selected_universe)
+        c2.metric("Total in Universe", total_count)
+        c3.metric("Matches (Filters)", len(display_df))
 
-    # ── RENDER TABLE ──
-    st.dataframe(
-        display_df,
-        width="stretch",
-        hide_index=True,
-        column_config={
-            "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
-            "Index": st.column_config.TextColumn("Index", width="small"),
-            "Close": st.column_config.NumberColumn("Close (₹)", format="%.2f", width="small"),
-            "Sharpe": st.column_config.NumberColumn("Sharpe", format="%.3f", width="small"),
-            "Volatility": st.column_config.NumberColumn("Volatility (SD)", format="%.4f", width="small"),
-            "52w_High": st.column_config.NumberColumn("52w High", format="%.2f", width="small"),
-            "Median Vol": st.column_config.NumberColumn("Median Vol", format="%,d", width="medium"),
-            "1Y Change": st.column_config.NumberColumn("1Y Change", format="%.2f%%", width="small"),
-            "% from 52wH": st.column_config.NumberColumn("% from 52wH", format="%.2f%%", width="small"),
-            "Circuit Close": st.column_config.NumberColumn("Circuit Close", format="%d", width="small")
-        },
-        height=650
-    )
+        # ── RENDER TABLE ──
+        st.dataframe(
+            display_df,
+            width="stretch",
+            hide_index=True,
+            column_config={
+                "Symbol": st.column_config.TextColumn("Symbol", width="medium"),
+                "Index": st.column_config.TextColumn("Index", width="small"),
+                "Close": st.column_config.NumberColumn("Close (₹)", format="%.2f", width="small"),
+                "Sharpe": st.column_config.NumberColumn("Sharpe", format="%.3f", width="small"),
+                "Volatility": st.column_config.NumberColumn("Volatility (SD)", format="%.4f", width="small"),
+                "52w_High": st.column_config.NumberColumn("52w High", format="%.2f", width="small"),
+                "Median Vol": st.column_config.NumberColumn("Median Vol", format="%,d", width="medium"),
+                "1Y Change": st.column_config.NumberColumn("1Y Change", format="%.2f%%", width="small"),
+                "% from 52wH": st.column_config.NumberColumn("% from 52wH", format="%.2f%%", width="small"),
+                "Circuit Close": st.column_config.NumberColumn("Circuit Close", format="%d", width="small")
+            },
+            height=650
+        )
 
-    # Export CSV
-    csv = display_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "📥 Download Momentum Screener Results", csv,
-        file_name=f"momentum_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
-        mime="text/csv",
-        width="stretch"
-    )
+        # Export CSV
+        csv = display_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "📥 Download Momentum Screener Results", csv,
+            file_name=f"momentum_screener_{datetime.now(IST).strftime('%Y%m%d')}.csv",
+            mime="text/csv",
+            width="stretch"
+        )
 
 
 def main():
