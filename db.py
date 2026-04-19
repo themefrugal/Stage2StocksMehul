@@ -4,14 +4,17 @@ Auto-detects from DATABASE_URL prefix:
   sqlite:///path/to/file.db  → SQLite (local dev, no network needed)
   postgresql://...            → PostgreSQL via psycopg v3 (cloud deploy)
 """
-import os
+
 import io
+import os
 import re
 import sqlite3
+
 import pandas as pd
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 # ──────────────────────────────────────────────
 # BACKEND DETECTION
@@ -21,9 +24,11 @@ def _db_url() -> str:
     url = os.environ.get("DATABASE_URL", "sqlite:///daily_cache/stocks.db")
     return url
 
+
 def _is_sqlite() -> bool:
     """True if the configured backend is SQLite."""
     return _db_url().startswith("sqlite")
+
 
 def _sqlite_path() -> str:
     """Extract the filesystem path from a sqlite:// URL and ensure its parent directory exists."""
@@ -33,9 +38,13 @@ def _sqlite_path() -> str:
     os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
     return path
 
+
 def _get_pg_conn():
     """Open a PostgreSQL connection with up to 3 retries; injects Neon endpoint param when needed."""
-    import time, psycopg
+    import time
+
+    import psycopg
+
     url = _db_url()
     m = re.search(r"@(ep-[^.]+)\.", url)
     if m and "options=" not in url:
@@ -86,7 +95,9 @@ def init_db():
     else:
         # PostgreSQL uses JSONB and TIMESTAMP — adjust DDL
         with _get_pg_conn() as conn:
-            conn.execute(ddl_ohlcv.replace("REAL", "FLOAT").replace("INTEGER", "BIGINT"))
+            conn.execute(
+                ddl_ohlcv.replace("REAL", "FLOAT").replace("INTEGER", "BIGINT")
+            )
             conn.execute(ddl_idx)
             conn.execute("""
                 CREATE TABLE IF NOT EXISTS stage2_cache (
@@ -106,7 +117,15 @@ def upsert_ohlcv(records: list[dict]):
     if not records:
         return
     rows = [
-        (r["symbol"], str(r["date"]), r["open"], r["high"], r["low"], r["close"], r["volume"])
+        (
+            r["symbol"],
+            str(r["date"]),
+            r["open"],
+            r["high"],
+            r["low"],
+            r["close"],
+            r["volume"],
+        )
         for r in records
     ]
     sql = """
@@ -122,6 +141,7 @@ def upsert_ohlcv(records: list[dict]):
             conn.commit()
     else:
         import psycopg
+
         pg_sql = sql.replace("?", "%s")
         with _get_pg_conn() as conn:
             conn.executemany(pg_sql, rows)
@@ -160,11 +180,13 @@ def load_ohlcv_all(period_days: int = 550) -> dict[str, pd.DataFrame]:
     """Load the last period_days of OHLCV data; returns a symbol→DataFrame dict with proper column names."""
     if _is_sqlite():
         from datetime import datetime, timedelta
+
         cutoff = (datetime.now() - timedelta(days=period_days)).strftime("%Y-%m-%d")
         with sqlite3.connect(_sqlite_path()) as conn:
             df = pd.read_sql(
                 "SELECT * FROM ohlcv WHERE date >= ? ORDER BY symbol, date",
-                conn, params=(cutoff,)
+                conn,
+                params=(cutoff,),
             )
     else:
         with _get_pg_conn() as conn:
@@ -174,7 +196,10 @@ def load_ohlcv_all(period_days: int = 550) -> dict[str, pd.DataFrame]:
                 WHERE date >= NOW() - INTERVAL '{period_days} days'
                 ORDER BY symbol, date
             """).fetchall()
-            df = pd.DataFrame(rows, columns=["symbol","date","open","high","low","close","volume"])
+            df = pd.DataFrame(
+                rows,
+                columns=["symbol", "date", "open", "high", "low", "close", "volume"],
+            )
 
     if df.empty:
         return {}

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+
 from config import CIRCUIT_LEVELS, CIRCUIT_TOLERANCE
 
 
@@ -10,8 +11,12 @@ def _count_circuits(df: pd.DataFrame) -> int:
     pct_change = df["Close"].pct_change() * 100
     circuit_count = 0
     for level in CIRCUIT_LEVELS:
-        upper = (pct_change >= level - CIRCUIT_TOLERANCE) & (pct_change <= level + CIRCUIT_TOLERANCE)
-        lower = (pct_change <= -level - CIRCUIT_TOLERANCE) & (pct_change >= -level + CIRCUIT_TOLERANCE)
+        upper = (pct_change >= level - CIRCUIT_TOLERANCE) & (
+            pct_change <= level + CIRCUIT_TOLERANCE
+        )
+        lower = (pct_change <= -level - CIRCUIT_TOLERANCE) & (
+            pct_change >= -level + CIRCUIT_TOLERANCE
+        )
         circuit_count += (upper | lower).sum()
     return int(circuit_count)
 
@@ -26,7 +31,9 @@ def _calculate_sharpe(df: pd.DataFrame, period_days: int) -> float | None:
         return None
     total_return = (subset["Close"].iloc[-1] / subset["Close"].iloc[0]) - 1
     trading_days_in_year = 252
-    annualized_roc = ((1 + total_return) ** (trading_days_in_year / len(daily_returns))) - 1
+    annualized_roc = (
+        (1 + total_return) ** (trading_days_in_year / len(daily_returns))
+    ) - 1
     annualized_sd = daily_returns.std() * np.sqrt(trading_days_in_year)
     if annualized_sd == 0:
         return None

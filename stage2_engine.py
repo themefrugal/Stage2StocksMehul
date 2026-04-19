@@ -1,6 +1,8 @@
 import numpy as np
 import pandas as pd
-from config import MIN_VOLUME, VOL_AVG_PERIOD, HH_HL_LOOKBACK, MA_RISING_LOOKBACK
+
+from config import (HH_HL_LOOKBACK, MA_RISING_LOOKBACK, MIN_VOLUME,
+                    VOL_AVG_PERIOD)
 
 
 def _rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
@@ -34,24 +36,41 @@ def score_stage2(df: pd.DataFrame) -> dict | None:
         return None
 
     score = 0
-    if vr >= 2.0: score += 1
-    if h1 >= h.rolling(HH_HL_LOOKBACK).max().shift(1).iloc[-1]: score += 1
-    if l1 >= l.rolling(HH_HL_LOOKBACK).min().shift(1).iloc[-1]: score += 1
-    if c1 > m50 and ma50.iloc[-1] > ma50.iloc[-MA_RISING_LOOKBACK]: score += 1
-    if c1 > m200 and ma200.iloc[-1] > ma200.iloc[-MA_RISING_LOOKBACK]: score += 1
-    if c1 > m150: score += 1
-    if m50 > m150 > m200: score += 1
+    if vr >= 2.0:
+        score += 1
+    if h1 >= h.rolling(HH_HL_LOOKBACK).max().shift(1).iloc[-1]:
+        score += 1
+    if l1 >= l.rolling(HH_HL_LOOKBACK).min().shift(1).iloc[-1]:
+        score += 1
+    if c1 > m50 and ma50.iloc[-1] > ma50.iloc[-MA_RISING_LOOKBACK]:
+        score += 1
+    if c1 > m200 and ma200.iloc[-1] > ma200.iloc[-MA_RISING_LOOKBACK]:
+        score += 1
+    if c1 > m150:
+        score += 1
+    if m50 > m150 > m200:
+        score += 1
 
-    if score >= 6: stage = "🟢 Strong Stage 2"
-    elif score >= 4: stage = "🟡 Likely Stage 2"
-    elif score >= 2: stage = "🟠 Early/Weak Stage 2"
-    else: stage = "⚪ Not Stage 2"
+    if score >= 6:
+        stage = "🟢 Strong Stage 2"
+    elif score >= 4:
+        stage = "🟡 Likely Stage 2"
+    elif score >= 2:
+        stage = "🟠 Early/Weak Stage 2"
+    else:
+        stage = "⚪ Not Stage 2"
 
     return {
-        "Score": score, "Stage": stage,
+        "Score": score,
+        "Stage": stage,
         "Illiquid": avg_vol.iloc[-1] < MIN_VOLUME,
-        "Close": round(c1, 2), "Volume": int(v1), "Vol_Ratio": round(vr, 2),
-        "RSI": round(r, 1), "MA50": round(m50, 2), "MA150": round(m150, 2),
-        "MA200": round(m200, 2), "MA_Stack": m50 > m150 > m200,
-        "Avg_Vol": int(np.floor(avg_vol.iloc[-1]))
+        "Close": round(c1, 2),
+        "Volume": int(v1),
+        "Vol_Ratio": round(vr, 2),
+        "RSI": round(r, 1),
+        "MA50": round(m50, 2),
+        "MA150": round(m150, 2),
+        "MA200": round(m200, 2),
+        "MA_Stack": m50 > m150 > m200,
+        "Avg_Vol": int(np.floor(avg_vol.iloc[-1])),
     }

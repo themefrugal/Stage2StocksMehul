@@ -1,14 +1,15 @@
-import os
 import json
-import streamlit as st
-import pandas as pd
-import yfinance as yf
+import os
 from datetime import datetime, timedelta
 
+import pandas as pd
+import streamlit as st
+import yfinance as yf
+
 import db
-from config import IST, HISTORY_PERIOD, _MOMENTUM_TTL
-from stage2_engine import score_stage2
+from config import _MOMENTUM_TTL, HISTORY_PERIOD, IST
 from momentum_engine import score_momentum
+from stage2_engine import score_stage2
 
 
 # ──────────────────────────────────────────────
@@ -68,12 +69,16 @@ def _sync_ohlcv_to_db(all_symbols: list[str], target_date: str = None) -> bool:
     global_max, conservative_min = db.get_latest_ohlcv_date()
 
     if global_max is None:
-        spinner_msg = f"🌐 First run: downloading full history for {len(tickers)} stocks..."
+        spinner_msg = (
+            f"🌐 First run: downloading full history for {len(tickers)} stocks..."
+        )
         fetch_kwargs = {"period": HISTORY_PERIOD}
     else:
         if target_date and global_max >= target_date:
             return True
-        fetch_from = (datetime.strptime(conservative_min, "%Y-%m-%d") - timedelta(days=3)).strftime("%Y-%m-%d")
+        fetch_from = (
+            datetime.strptime(conservative_min, "%Y-%m-%d") - timedelta(days=3)
+        ).strftime("%Y-%m-%d")
         today = datetime.now(IST).strftime("%Y-%m-%d")
         spinner_msg = f"🔄 Incremental update: fetching data since {fetch_from}..."
         fetch_kwargs = {"start": fetch_from, "end": today}
@@ -81,9 +86,12 @@ def _sync_ohlcv_to_db(all_symbols: list[str], target_date: str = None) -> bool:
     try:
         with st.spinner(spinner_msg):
             raw = yf.download(
-                tickers, group_by="ticker",
-                threads=True, progress=False, auto_adjust=True,
-                **fetch_kwargs
+                tickers,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+                auto_adjust=True,
+                **fetch_kwargs,
             )
     except Exception as e:
         st.error(f"Yahoo Finance Error: {e}")
@@ -93,27 +101,35 @@ def _sync_ohlcv_to_db(all_symbols: list[str], target_date: str = None) -> bool:
         return False
 
     records = []
-    available = raw.columns.get_level_values(0).unique().tolist() if isinstance(raw.columns, pd.MultiIndex) else tickers
+    available = (
+        raw.columns.get_level_values(0).unique().tolist()
+        if isinstance(raw.columns, pd.MultiIndex)
+        else tickers
+    )
 
     for t in tickers:
         sym = t.replace(".NS", "")
         try:
             if t not in available:
                 continue
-            sub = raw[t].dropna(how="all") if len(tickers) > 1 else raw.dropna(how="all")
+            sub = (
+                raw[t].dropna(how="all") if len(tickers) > 1 else raw.dropna(how="all")
+            )
             sub.columns = [c[0] if isinstance(c, tuple) else c for c in sub.columns]
             for dt, row in sub.iterrows():
                 if pd.isna(row.get("Close")):
                     continue
-                records.append({
-                    "symbol": sym,
-                    "date": dt.date(),
-                    "open":   float(row.get("Open", 0) or 0),
-                    "high":   float(row.get("High", 0) or 0),
-                    "low":    float(row.get("Low", 0) or 0),
-                    "close":  float(row["Close"]),
-                    "volume": int(row.get("Volume", 0) or 0),
-                })
+                records.append(
+                    {
+                        "symbol": sym,
+                        "date": dt.date(),
+                        "open": float(row.get("Open", 0) or 0),
+                        "high": float(row.get("High", 0) or 0),
+                        "low": float(row.get("Low", 0) or 0),
+                        "close": float(row["Close"]),
+                        "volume": int(row.get("Volume", 0) or 0),
+                    }
+                )
         except Exception:
             continue
 
@@ -123,7 +139,9 @@ def _sync_ohlcv_to_db(all_symbols: list[str], target_date: str = None) -> bool:
     return True
 
 
-def _score_from_db(constituents: dict, for_momentum: bool, rsi_filter: bool) -> pd.DataFrame:
+def _score_from_db(
+    constituents: dict, for_momentum: bool, rsi_filter: bool
+) -> pd.DataFrame:
     """Load recent OHLCV from DB, run the appropriate scorer on each symbol, and return a sorted DataFrame."""
     period_days = 550 if for_momentum else 750
     with st.spinner("📊 Loading history from database and scoring..."):
@@ -135,7 +153,10 @@ def _score_from_db(constituents: dict, for_momentum: bool, rsi_filter: bool) -> 
             res = score_momentum(sub) if for_momentum else score_stage2(sub)
             if res:
                 res["Symbol"] = sym
-                res["Index"] = next((idx for idx, syms in constituents.items() if sym in syms), "Unknown")
+                res["Index"] = next(
+                    (idx for idx, syms in constituents.items() if sym in syms),
+                    "Unknown",
+                )
                 results.append(res)
         except Exception:
             continue
@@ -152,7 +173,7 @@ def _score_from_db(constituents: dict, for_momentum: bool, rsi_filter: bool) -> 
 # 3-TIER CACHE  (Memory → DB → Internet)
 # ──────────────────────────────────────────────
 _mem_cache: dict[str, dict] = {
-    "stage2":   {"date": None, "data": None},
+    "stage2": {"date": None, "data": None},
     "momentum": {"date": None, "data": None, "ts": None},
 }
 
@@ -160,11 +181,17 @@ _mem_cache: dict[str, dict] = {
 def _get_target_key() -> str:
     """Return the last valid trading date string to use as the cache key (after-market cutoff at 19:00 IST)."""
     now = datetime.now(IST)
-    start = now.strftime("%Y-%m-%d") if now.hour >= 19 else (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    start = (
+        now.strftime("%Y-%m-%d")
+        if now.hour >= 19
+        else (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    )
     return get_last_valid_trading_date(start, load_nse_holidays())
 
 
-def resolve_screener_data(rsi_filter: bool, for_momentum: bool = False, universe: str = None):
+def resolve_screener_data(
+    rsi_filter: bool, for_momentum: bool = False, universe: str = None
+):
     """
     3-tier resolution for both screeners:
       Tier 1 — in-memory (same process, keyed by trading date / TTL)
@@ -176,14 +203,20 @@ def resolve_screener_data(rsi_filter: bool, for_momentum: bool = False, universe
     constituents = _load_constituents()
     if not constituents:
         return pd.DataFrame(), target_key, "error"
-    all_symbols = list(dict.fromkeys([s for syms in constituents.values() for s in syms]))
+    all_symbols = list(
+        dict.fromkeys([s for syms in constituents.values() for s in syms])
+    )
 
     if for_momentum:
         mc = _mem_cache["momentum"]
         now = datetime.now()
 
-        if (mc["data"] is not None and mc["date"] == target_key and
-                mc["ts"] and (now - mc["ts"]).total_seconds() < _MOMENTUM_TTL):
+        if (
+            mc["data"] is not None
+            and mc["date"] == target_key
+            and mc["ts"]
+            and (now - mc["ts"]).total_seconds() < _MOMENTUM_TTL
+        ):
             return mc["data"], target_key, "memory"
 
         _sync_ohlcv_to_db(all_symbols, target_date=target_key)
