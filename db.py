@@ -92,7 +92,8 @@ def upsert_ohlcv(records: list[dict]):
             close=excluded.close, volume=excluded.volume
     """
     with _get_conn() as conn:
-        conn.executemany(sql, rows)
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
         conn.commit()
 
 
@@ -122,7 +123,7 @@ def load_ohlcv_all(period_days: int = 550) -> dict[str, pd.DataFrame]:
         rows = conn.execute(f"""
             SELECT symbol, date, open, high, low, close, volume
             FROM ohlcv
-            WHERE date >= NOW() - INTERVAL '{period_days} days'
+            WHERE date::date >= NOW() - INTERVAL '{period_days} days'
             ORDER BY symbol, date
         """).fetchall()
 
