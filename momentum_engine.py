@@ -89,7 +89,7 @@ def score_momentum(df: pd.DataFrame) -> dict | None:
         "52w_High": round(high_52w, 2) if high_52w else None,
         "DMA100": round(dma100, 2),
         "DMA200": round(dma200, 2),
-        "Vol_Median": int(vol_median) if vol_median else None,
+        "Vol_Median": int(vol_median) if vol_median and not np.isnan(vol_median) else None,
         "1Y_Change": round(one_yr_change, 2) if one_yr_change else None,
         "Pct_From_52W_High": round(pct_from_52w_high, 2) if pct_from_52w_high else None,
         "Circuit_Count": circuit_count,

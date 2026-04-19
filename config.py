@@ -1,7 +1,7 @@
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo("Asia/Kolkata")
-HISTORY_PERIOD = "2y"
+HISTORY_PERIOD = "5y"
 MIN_VOLUME = 100_000
 VOL_AVG_PERIOD = 10
 HH_HL_LOOKBACK = 50

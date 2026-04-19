@@ -40,7 +40,7 @@ def _get_conn() -> psycopg.Connection:
 # SCHEMA INIT
 # ──────────────────────────────────────────────
 def init_db():
-    """Create ohlcv and stage2_cache tables (and index) if they do not already exist."""
+    """Create ohlcv, index_ohlcv, and stage2_cache tables (and indexes) if they do not already exist."""
     with _get_conn() as conn:
         conn.execute("""
             CREATE TABLE IF NOT EXISTS ohlcv (
@@ -55,6 +55,15 @@ def init_db():
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS ohlcv_date_idx ON ohlcv (date)")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS index_ohlcv (
+                symbol  TEXT    NOT NULL,
+                date    TEXT    NOT NULL,
+                close   FLOAT,
+                PRIMARY KEY (symbol, date)
+            )
+        """)
+        conn.execute("CREATE INDEX IF NOT EXISTS index_ohlcv_date_idx ON index_ohlcv (date)")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS stage2_cache (
                 cache_date  DATE      PRIMARY KEY,
@@ -143,6 +152,27 @@ def load_ohlcv_all(period_days: int = 550) -> dict[str, pd.DataFrame]:
     return result
 
 
+def load_ohlcv_symbol(symbol: str, period_days: int = 750) -> pd.DataFrame:
+    """Load OHLCV history for a single symbol from DB; returns empty DataFrame if not found."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT date, open, high, low, close, volume
+            FROM ohlcv
+            WHERE symbol = %s AND date::date >= NOW() - INTERVAL '{period_days} days'
+            ORDER BY date
+            """,
+            (symbol,),
+        ).fetchall()
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows, columns=["date", "Open", "High", "Low", "Close", "Volume"])
+    df["date"] = pd.to_datetime(df["date"])
+    df = df.set_index("date")
+    df["Volume"] = df["Volume"].astype("Int64")
+    return df
+
+
 # ──────────────────────────────────────────────
 # STAGE 2 CACHE — WRITE / READ
 # ──────────────────────────────────────────────
@@ -161,6 +191,13 @@ def save_stage2_cache(cache_date: str, df: pd.DataFrame):
         conn.commit()
 
 
+def _jsonb_to_df(value) -> pd.DataFrame:
+    """Convert a psycopg JSONB value (already a Python object) or raw JSON string to a DataFrame."""
+    if isinstance(value, str):
+        return pd.read_json(io.StringIO(value), orient="records")
+    return pd.DataFrame(value)
+
+
 def load_stage2_cache(cache_date: str) -> pd.DataFrame | None:
     """Return cached Stage 2 results for a specific trading date, or None if not found."""
     with _get_conn() as conn:
@@ -168,8 +205,50 @@ def load_stage2_cache(cache_date: str) -> pd.DataFrame | None:
             "SELECT results FROM stage2_cache WHERE cache_date = %s", (cache_date,)
         ).fetchone()
     if row:
-        return pd.read_json(io.StringIO(row[0]), orient="records")
+        return _jsonb_to_df(row[0])
     return None
+
+
+# ──────────────────────────────────────────────
+# INDEX OHLCV (benchmarks)
+# ──────────────────────────────────────────────
+def upsert_index_ohlcv(records: list[dict]):
+    """Bulk-upsert benchmark index close prices (symbol, date, close)."""
+    if not records:
+        return
+    rows = [(r["symbol"], str(r["date"]), r["close"]) for r in records]
+    sql = """
+        INSERT INTO index_ohlcv (symbol, date, close)
+        VALUES (%s, %s, %s)
+        ON CONFLICT (symbol, date) DO UPDATE SET close=excluded.close
+    """
+    with _get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.executemany(sql, rows)
+        conn.commit()
+
+
+def load_index_ohlcv(symbol: str) -> pd.Series:
+    """Return a date-indexed close price Series for a benchmark index symbol."""
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT date, close FROM index_ohlcv WHERE symbol = %s ORDER BY date",
+            (symbol,),
+        ).fetchall()
+    if not rows:
+        return pd.Series(dtype=float)
+    df = pd.DataFrame(rows, columns=["date", "close"])
+    df["date"] = pd.to_datetime(df["date"])
+    return df.set_index("date")["close"]
+
+
+def get_latest_index_date(symbol: str) -> str | None:
+    """Return the most recent date stored for a benchmark index symbol."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT MAX(date) FROM index_ohlcv WHERE symbol = %s", (symbol,)
+        ).fetchone()
+    return row[0] if row else None
 
 
 def load_latest_stage2_cache() -> tuple[pd.DataFrame | None, str | None]:
@@ -180,5 +259,5 @@ def load_latest_stage2_cache() -> tuple[pd.DataFrame | None, str | None]:
         ).fetchone()
     if row:
         date_str = row[0] if isinstance(row[0], str) else row[0].strftime("%Y-%m-%d")
-        return pd.read_json(io.StringIO(row[1]), orient="records"), date_str
+        return _jsonb_to_df(row[1]), date_str
     return None, None

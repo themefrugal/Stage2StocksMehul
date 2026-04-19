@@ -16,6 +16,37 @@ def _rsi_wilder(series: pd.Series, period: int = 14) -> pd.Series:
     return 100 - (100 / (1 + rs))
 
 
+def compute_rolling_stage2(df: pd.DataFrame) -> pd.DataFrame:
+    """Vectorised daily Stage 2 score; returns df with Close/MA cols, Score (0-7), and Phase."""
+    c, h, l, v = df["Close"], df["High"], df["Low"], df["Volume"].astype(float)
+    ma50 = c.rolling(50).mean()
+    ma150 = c.rolling(150).mean()
+    ma200 = c.rolling(200).mean()
+    avg_vol = v.rolling(VOL_AVG_PERIOD).mean()
+
+    score = (
+        (v / avg_vol >= 2.0).astype(int)
+        + (h >= h.rolling(HH_HL_LOOKBACK).max().shift(1)).astype(int)
+        + (l >= l.rolling(HH_HL_LOOKBACK).min().shift(1)).astype(int)
+        + ((c > ma50) & (ma50 > ma50.shift(MA_RISING_LOOKBACK))).astype(int)
+        + ((c > ma200) & (ma200 > ma200.shift(MA_RISING_LOOKBACK))).astype(int)
+        + (c > ma150).astype(int)
+        + ((ma50 > ma150) & (ma150 > ma200)).astype(int)
+    )
+
+    phase = pd.cut(
+        score,
+        bins=[-1, 1, 3, 5, 7],
+        labels=["Not Stage 2", "Early/Weak Stage 2", "Likely Stage 2", "Strong Stage 2"],
+    )
+
+    result = pd.DataFrame(
+        {"Close": c, "MA50": ma50, "MA150": ma150, "MA200": ma200, "Score": score, "Phase": phase},
+        index=df.index,
+    )
+    return result
+
+
 def score_stage2(df: pd.DataFrame) -> dict | None:
     """Score a stock on 7 Weinstein Stage 2 criteria; returns metric dict or None if insufficient data."""
     if len(df) < 250:

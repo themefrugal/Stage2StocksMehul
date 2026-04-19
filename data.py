@@ -139,6 +139,53 @@ def _sync_ohlcv_to_db(all_symbols: list[str], target_date: str = None) -> bool:
     return True
 
 
+# ──────────────────────────────────────────────
+# BENCHMARK SYNC
+# ──────────────────────────────────────────────
+BENCHMARK_TICKERS = {
+    "NIFTY50": "^NSEI",
+    "NIFTY500": "^CRSLDX",
+}
+
+
+def sync_benchmark_data() -> bool:
+    """Fetch Nifty 50 and Nifty 500 index close prices from yfinance and upsert to index_ohlcv table."""
+    records = []
+    for label, ticker in BENCHMARK_TICKERS.items():
+        latest = db.get_latest_index_date(label)
+        if latest is None:
+            fetch_kwargs = {"period": "10y"}
+        else:
+            fetch_from = (
+                datetime.strptime(latest, "%Y-%m-%d") - timedelta(days=3)
+            ).strftime("%Y-%m-%d")
+            today = datetime.now(IST).strftime("%Y-%m-%d")
+            if latest >= today:
+                continue
+            fetch_kwargs = {"start": fetch_from, "end": today}
+
+        try:
+            raw = yf.download(ticker, auto_adjust=True, progress=False, **fetch_kwargs)
+            if raw is None or raw.empty:
+                continue
+            raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
+            for dt, row in raw.iterrows():
+                if pd.isna(row.get("Close")):
+                    continue
+                records.append({"symbol": label, "date": dt.date(), "close": float(row["Close"])})
+        except Exception:
+            continue
+
+    if records:
+        db.upsert_index_ohlcv(records)
+    return True
+
+
+def load_benchmark_series() -> dict[str, pd.Series]:
+    """Return close price Series for each benchmark index, keyed by label."""
+    return {label: db.load_index_ohlcv(label) for label in BENCHMARK_TICKERS}
+
+
 def _score_from_db(
     constituents: dict, for_momentum: bool, rsi_filter: bool
 ) -> pd.DataFrame:
@@ -170,11 +217,35 @@ def _score_from_db(
 
 
 # ──────────────────────────────────────────────
+# SINGLE-SYMBOL CHART DATA
+# ──────────────────────────────────────────────
+def fetch_chart_data(symbol: str) -> pd.DataFrame:
+    """Return 2y OHLCV DataFrame for one symbol; tries DB first, falls back to yfinance."""
+    df = db.load_ohlcv_symbol(symbol.upper(), period_days=750)
+    if not df.empty:
+        return df
+    try:
+        raw = yf.download(
+            f"{symbol.upper()}.NS",
+            period="2y",
+            auto_adjust=True,
+            progress=False,
+        )
+        if not raw.empty:
+            raw.columns = [c[0] if isinstance(c, tuple) else c for c in raw.columns]
+            return raw[["Open", "High", "Low", "Close", "Volume"]]
+    except Exception:
+        pass
+    return pd.DataFrame()
+
+
+# ──────────────────────────────────────────────
 # 3-TIER CACHE  (Memory → DB → Internet)
 # ──────────────────────────────────────────────
 _mem_cache: dict[str, dict] = {
-    "stage2": {"date": None, "data": None},
+    "stage2":   {"date": None, "data": None},
     "momentum": {"date": None, "data": None, "ts": None},
+    "backtest": {"date": None, "data": None, "ts": None},
 }
 
 
@@ -187,6 +258,42 @@ def _get_target_key() -> str:
         else (now - timedelta(days=1)).strftime("%Y-%m-%d")
     )
     return get_last_valid_trading_date(start, load_nse_holidays())
+
+
+def load_ohlcv_for_backtest() -> tuple[dict, str, str]:
+    """
+    3-tier load of the full OHLCV history for backtesting (~5 years).
+      Tier 1 — in-memory dict keyed by last trading date (TTL: 1 hour)
+      Tier 2 — PostgreSQL (persists across restarts; read without re-fetching if fresh)
+      Tier 3 — yfinance incremental sync when DB is stale
+    Returns (symbol_data, target_date, source) where source is 'memory' | 'db' | 'internet'.
+    """
+    target_key = _get_target_key()
+    constituents = _load_constituents()
+    all_symbols = list(dict.fromkeys([s for syms in constituents.values() for s in syms]))
+
+    bc = _mem_cache["backtest"]
+    now = datetime.now()
+    if (
+        bc["data"] is not None
+        and bc["date"] == target_key
+        and bc["ts"]
+        and (now - bc["ts"]).total_seconds() < _MOMENTUM_TTL
+    ):
+        return bc["data"], target_key, "memory"
+
+    # Tier 3: sync from yfinance if DB is stale
+    _sync_ohlcv_to_db(all_symbols, target_date=target_key)
+
+    # Tier 2: load from DB
+    with st.spinner("📊 Loading 5-year OHLCV history from database…"):
+        symbol_data = db.load_ohlcv_all(period_days=1825)
+
+    if symbol_data:
+        _mem_cache["backtest"] = {"date": target_key, "data": symbol_data, "ts": now}
+
+    source = "memory" if bc["data"] is not None and bc["date"] == target_key else "db"
+    return symbol_data, target_key, source
 
 
 def resolve_screener_data(
